@@ -1,0 +1,17 @@
+{
+  "delivery_config": {
+    "default_recipient": "REPLACE_WITH_RECIPIENT_ADDRESS",
+    "password_path_on_aiserver": "/path/to/encrypted-or-local-secret-file",
+    "smtp_host": "smtp.example.com",
+    "smtp_port": 587,
+    "subject_template": "{runner_label} Daily Briefing - {human_date}",
+    "runner_labels": {
+      "codex": "Codex",
+      "claude": "Claude"
+    }
+  },
+  "paths": {
+    "briefing_root": "D:/Daily-Briefings",
+    "archive_root": "D:/Daily-Briefings/archive"
+  }
+}

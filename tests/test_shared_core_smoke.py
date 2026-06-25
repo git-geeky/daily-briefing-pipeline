@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import json
+import os
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -93,6 +96,48 @@ class SharedCoreSmokeTests(unittest.TestCase):
         self.assertEqual(report["schema_version"], 1)
         self.assertEqual(report["runner"], "shared-core-test")
         self.assertEqual(report["validation_status"], "not_run")
+
+    def test_private_overlay_merges_nested_values(self) -> None:
+        private_config = importlib.import_module("private_config")
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            public = tmp_path / "delivery-config.json"
+            restore = tmp_path / "restore.local.json"
+            public.write_text(
+                json.dumps(
+                    {
+                        "default_recipient": "",
+                        "smtp_host": "smtp.example.com",
+                        "runner_labels": {"codex": "Codex"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            restore.write_text(
+                json.dumps(
+                    {
+                        "delivery_config": {
+                            "default_recipient": "RECIPIENT_PLACEHOLDER",
+                            "runner_labels": {"claude": "Claude"},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            env_key = "BRIEFING_RESTORE_FILE"
+            old = os.environ.get(env_key)
+            os.environ[env_key] = str(restore)
+            try:
+                merged = private_config.load_json_with_private_overlay(public, overlay_key="delivery_config")
+            finally:
+                if old is None:
+                    os.environ.pop(env_key, None)
+                else:
+                    os.environ[env_key] = old
+
+        self.assertEqual(merged["default_recipient"], "RECIPIENT_PLACEHOLDER")
+        self.assertEqual(merged["runner_labels"]["codex"], "Codex")
+        self.assertEqual(merged["runner_labels"]["claude"], "Claude")
 
 
 if __name__ == "__main__":

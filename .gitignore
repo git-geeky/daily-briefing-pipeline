@@ -22,3 +22,9 @@ source-index.json
 fleet-health.json
 generated/
 archive/
+
+# Local private restore overlay. This may contain local recipient addresses,
+# private path names, or secret-file paths and must not be committed.
+restore.local.json
+*.local.json
+.local/

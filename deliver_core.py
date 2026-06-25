@@ -1,8 +1,7 @@
 """Shared SMTP delivery for the daily briefing pipeline.
 
-Designed to run on aiserver (where the Gmail app password and the transferred PDF
-live). Both the Claude and Codex runners eventually invoke this same module via
-`ssh aiserver python3 /home/agent/briefing-pipeline/deliver_core.py ...`.
+Designed for a host where the SMTP credential file and the transferred PDF live.
+Runner wrappers can invoke this same module on their delivery host.
 
 Config lives alongside this module in `delivery-config.json`.
 
@@ -37,6 +36,11 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
+try:
+    from private_config import load_json_with_private_overlay
+except ImportError:  # pragma: no cover - supports package-style imports
+    from .private_config import load_json_with_private_overlay
+
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "delivery-config.json"
 
@@ -45,7 +49,7 @@ def load_config(path: Path | None = None) -> dict:
     target = path or DEFAULT_CONFIG_PATH
     if not target.exists():
         raise SystemExit(f"delivery-config.json not found at {target}")
-    return json.loads(target.read_text(encoding="utf-8"))
+    return load_json_with_private_overlay(target, overlay_key="delivery_config")
 
 
 def human_date(iso_date: str) -> str:
@@ -62,7 +66,7 @@ def send_briefing_email(
     subject_override: str | None = None,
     config_path: Path | None = None,
 ) -> dict:
-    """Send one briefing PDF via Gmail SMTP.
+    """Send one briefing PDF via SMTP.
 
     Raises SystemExit on any failure so callers don't accidentally suppress errors.
     Prints the literal string `Email sent` on success (preserving the contract
@@ -81,7 +85,7 @@ def send_briefing_email(
 
     app_password = Path(config["password_path_on_aiserver"]).read_text().strip()
     if not app_password:
-        raise SystemExit("Gmail app password file is empty")
+        raise SystemExit("SMTP app password file is empty")
 
     pdf_bytes = pdf_path.read_bytes()
     pdf_sha256 = hashlib.sha256(pdf_bytes).hexdigest()

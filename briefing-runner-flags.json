@@ -1,0 +1,4 @@
+{
+  "use_claude_code_for_scheduled_tasks": false,
+  "use_codex_for_scheduled_tasks": true
+}

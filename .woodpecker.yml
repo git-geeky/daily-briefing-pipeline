@@ -1,0 +1,40 @@
+when:
+  - event: push
+  - event: manual
+
+steps:
+  validate-python-json:
+    image: python:3.12-alpine
+    commands:
+      - |
+        python - <<'PY'
+        from pathlib import Path
+
+        failures = []
+        for path in sorted(Path(".").rglob("*.py")):
+            if ".git" in path.parts:
+                continue
+            try:
+                compile(path.read_text(encoding="utf-8-sig"), str(path), "exec")
+            except Exception as exc:
+                failures.append(f"{path}: {exc}")
+        if failures:
+            raise SystemExit("\n".join(failures))
+        PY
+      - |
+        python - <<'PY'
+        import json
+        from pathlib import Path
+
+        failures = []
+        for path in sorted(Path(".").rglob("*.json")):
+            if ".git" in path.parts:
+                continue
+            try:
+                json.loads(path.read_text(encoding="utf-8-sig"))
+            except Exception as exc:
+                failures.append(f"{path}: {exc}")
+        if failures:
+            raise SystemExit("\n".join(failures))
+        PY
+      - python -m unittest discover -s tests -p 'test_*.py' -v

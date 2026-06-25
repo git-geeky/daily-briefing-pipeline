@@ -1,0 +1,24 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Logs
+*.log
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Runtime state the briefing cores can write.
+# The cores resolve these under ~/Documents/Daily-Briefings/ (the PARENT) or the
+# runner's briefing_root, NOT inside this code dir — but ignore them defensively
+# in case a path helper ever misresolves to the repo root, so auto-sync never
+# churns and never commits the research-vault SQLite DB or fleet-health state.
+research-vault/
+research-vault.db
+source-index.json
+fleet-health.json
+generated/
+archive/

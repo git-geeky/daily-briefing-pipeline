@@ -1,0 +1,14 @@
+{
+  "default_recipient": "",
+  "smtp_host": "smtp.gmail.com",
+  "smtp_port": 587,
+  "password_path_on_aiserver": "",
+  "subject_template": "Daily Intelligence Briefing ({runner_label}) - {human_date}",
+  "body_template": "{runner_label}-generated briefing for {human_date} attached as PDF.\n\nSHA256: {pdf_sha256}\nSize: {pdf_size_bytes} bytes",
+  "runner_labels": {
+    "claude": "Claude",
+    "codex": "Codex",
+    "consensus": "Consensus",
+    "diff": "Fleet Diff"
+  }
+}

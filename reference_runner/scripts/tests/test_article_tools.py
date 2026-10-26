@@ -89,6 +89,27 @@ class ConfidenceRatingTests(unittest.TestCase):
         self.assertEqual(tools.confidence_line("## T\n**Confidence:** High: yes\n"), "High: yes")
 
 
+class IdentificationConfidenceTests(unittest.TestCase):
+    """Daily spec: every identification of a withheld person states its confidence level in the text."""
+
+    def find(self, text: str) -> list[str]:
+        if str(SCRIPTS_DIR) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS_DIR))
+        import briefing_manifest as manifest
+
+        return manifest.find_unlabelled_identifications(text)
+
+    def test_a_named_identification_without_a_confidence_label_is_found(self) -> None:
+        self.assertEqual(self.find("The filing was made by a John Doe who is likely Jane Roe, a former engineer."), ["likely Jane Roe"])
+
+    def test_a_labelled_identification_passes(self) -> None:
+        self.assertEqual(self.find("The filer is likely Jane Roe (identification confidence: Moderate, 2 matching attributes: employer and title; "
+                                   "the briefing's own research)."), [])
+
+    def test_offices_and_outlets_are_not_identifications(self) -> None:
+        self.assertEqual(self.find("The ruling is likely Supreme Court Justice territory, and the story is likely New York Times coverage next week."), [])
+
+
 class NormalizeTests(unittest.TestCase):
     def test_messy_output_is_repaired_without_touching_content(self) -> None:
         raw = fx.make_article(STORY, words=600, messy=True)

@@ -170,7 +170,11 @@ When a story involves a person whose identity is concealed or withheld (a source
 
 **Investigation method:** LinkedIn (employer, title, tenure, location, education; cross-reference employee lists); X/Twitter (employer + role keywords; replies/quote-tweets on the original story; followers of named parties); Reddit (relevant subs); court filings (PACER, state e-filing, Google Scholar); professional directories (state bar, SEC EDGAR, corporate registrations, patents, academic pubs); news archives (other outlets may have named them).
 
-**Reporting:** High confidence (3+ independent attributes) → name them and cite the matching attributes, noting it's the briefing's own research. Moderate (2 attributes) → "likely [name]" with a confidence range and which attributes match. Failure → say so, describe what was tried, name what would confirm. Never fabricate identities or present guesses as findings.
+**Reporting: every identification states its confidence level in the text.** Write it in this form, next to the name: `(identification confidence: High, 3 matching attributes: <the attributes>; the briefing's own research)`.
+- **High** (3+ independent attributes, from at least two different kinds of source) → name them and cite the matching attributes.
+- **Moderate** (2 attributes) → write "likely [name]" with `identification confidence: Moderate`, the confidence range and which attributes match. Never in a headline, title or bottom line.
+- **Below Moderate** (one attribute, or attributes that fit a common name or role) → do **not** name the person or hint at a name. Say that identification was attempted and not established, what was tried, and what would confirm.
+Never fabricate identities or present guesses as findings. The validator warns when a name is given without a stated identification confidence.
 
 **Japanese-language investigations:** use Japanese terms alongside English — LinkedIn Japan, 日本弁護士連合会, corporate registries (EDINET, 法人番号公表サイト), Japanese news archives (Chunichi, Nikkei, NHK), and platforms like Wantedly / Eight-Sansan.
 

@@ -489,7 +489,7 @@ class SharedBriefingValidationTests(unittest.TestCase):
         text = header_path.read_text(encoding="utf-8")
         text = text.replace(
             f'Cross-reference: Part III - "{titles["part3"][0]}".',
-            'Cross-reference: Part IV - "Osaka\'s Flood-Control Procurement Moves Into an Oversight Phase".',
+            'Cross-reference: Part IV - "Prefecture\'s Flood-Control Procurement Moves Into an Oversight Phase".',
         )
         header_path.write_text(text, encoding="utf-8")
         self.assemble_briefing.assemble(self.DATE)
@@ -804,7 +804,7 @@ class SharedBriefingValidationTests(unittest.TestCase):
                         section_key="part4",
                     ),
                     "",
-                    "## Article 3: Prefectural Assembly Follow-Up Lacks Verifiable Movement",
+                    "## Article 3: City Council Follow-Up Lacks Verifiable Movement",
                     "",
                     "## Quality Failure: hyperlocal reporting remains too thin for a real article.",
                     "",
@@ -1178,7 +1178,7 @@ class SharedBriefingValidationTests(unittest.TestCase):
             "part4": [
                 "Japan Grid Modernization Runs Into Transmission Permitting Reality",
                 "Kyushu Port Digitization Reveals a Quiet Labor Bottleneck",
-                "Osaka's Flood-Control Procurement Moves Into an Oversight Phase",
+                "Prefecture's Flood-Control Procurement Moves Into an Oversight Phase",
             ],
             "humaninterest": [
                 "Neighborhood Volunteers Rebuild a Community Kitchen Block by Block",

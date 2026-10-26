@@ -604,12 +604,23 @@ class Conductor:
     # ================================================================================
     # Entry points
     # ================================================================================
+    def _check_private_overlay(self) -> None:
+        """Personal coverage details come from the private restore file; without it the run uses the generic public text and says so."""
+        if self.edition.get("private_overlay.required") and not self.edition.get("private_overlay_applied"):
+            self.log("the private coverage overlay for this edition was not found: coverage that depends on it falls back to the generic text")
+            self._alert_once("private-overlay-missing", f"{self.edition.label}: private coverage overlay not found",
+                             "This edition expects owner-specific coverage details from the private restore file "
+                             f"(key 'edition:{self.edition.edition_id}'; see docs/RUNBOOK.md, 'Private overlay'). It was not found, so today's briefing "
+                             f"runs with the generic public text ({self.edition.get('private_overlay.covers', 'regional and watch-list coverage')}). "
+                             "Nothing else is affected.")
+
     def run(self, *, finish_only: bool = False) -> int:
         if not self.settings.get("enabled", True) or os.environ.get("BRIEFING_DISABLED") == "1":
             self._alert_once("disabled", "Briefing pipeline is disabled",
                              f"{self.edition.label} did not run on {self.date} because it is disabled "
                              "(conductor.enabled=false or BRIEFING_DISABLED=1). Remove the flag to resume.")
             return EXIT_DISABLED
+        self._check_private_overlay()
         delivered = self.state.state.get("delivered")
         if delivered and delivered.get("held") and self._release_due():
             self.log("the briefing carrying this edition went out without it (or is overdue): sending this edition on its own")
@@ -857,8 +868,12 @@ class Conductor:
         references = _HERE / "references"
         dedicated = references / f"{self.edition.edition_id}-briefing-spec.md"
         if dedicated.exists():
-            return dedicated.read_text(encoding="utf-8")
-        parts = [(references / name).read_text(encoding="utf-8") for name in ("briefing-spec.md", "generation-spec.md") if (references / name).exists()]
+            parts = [dedicated.read_text(encoding="utf-8")]
+        else:
+            parts = [(references / name).read_text(encoding="utf-8") for name in ("briefing-spec.md", "generation-spec.md") if (references / name).exists()]
+        notes = str(self.edition.get("spec_notes") or "").strip()  # owner-specific coverage, from the private overlay only
+        if notes:
+            parts.append("# Owner-specific coverage notes (private; binding)\n\n" + notes)
         return "\n\n---\n\n".join(parts)
 
     def quota_text(self) -> str:

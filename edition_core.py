@@ -190,6 +190,15 @@ def _load_cached(edition_id: str, directory: str) -> Edition:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, dict):
         raise EditionError(f"{path.name}: top-level JSON must be an object")
+    try:  # personal coverage details live outside git (private_config.edition_overlay)
+        import private_config
+
+        overlay = private_config.edition_overlay(edition_id)
+    except ImportError:
+        overlay = {}
+    if overlay:
+        payload = private_config.apply_overlay(payload, overlay)
+        payload["private_overlay_applied"] = True
     return _build(payload, path)
 
 

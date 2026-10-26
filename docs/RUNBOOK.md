@@ -91,14 +91,20 @@ None of the Windows or aiserver steps could be executed from the cloud session t
    * `animal-extra-recipients.txt`: the same, for the late stand-alone animal email.
    * `daily-recipients.txt` / `animal-recipients.txt`: **replace** the default recipient. Use them only to change who the owner is; a list that leaves the owner out removes the owner.
    Remember the combined email carries the whole daily intelligence section, so everyone on the daily list sees it.
-5. **Dry runs, in this order:**
+5. **Private coverage overlay (the daily edition).** The public repository carries only generic text for what is personal to the owner: the home-region and arts beats of Part IV, the watch-listed people and company, and the regional search tips. They live in the restore file outside git, under `"edition:daily"` (`conductor.section_briefs` and `spec_notes`), and are merged over the public edition when it loads. Merge the prepared overlay file into the restore file once, **before the first daily run** (the file is kept out of the repository; fill in the company name where it says so):
+   ```powershell
+   py -3 "$env:USERPROFILE\Documents\Daily-Briefings\pipeline-shared\merge_private_overlay.py" "$env:USERPROFILE\Downloads\restore.daily-overlay.json" --dry-run   # key paths only, nothing written
+   py -3 "$env:USERPROFILE\Documents\Daily-Briefings\pipeline-shared\merge_private_overlay.py" "$env:USERPROFILE\Downloads\restore.daily-overlay.json"
+   ```
+   The restore file is `%LOCALAPPDATA%\daily-briefing-pipeline\restore.local.json` (or the file named by `BRIEFING_RESTORE_FILE`); the merge keeps what is already there and saves a `.bak`. If the overlay is missing when the daily edition runs, the briefing still runs with the generic text and the alert `private-overlay-missing` is written. Git history of this repository still contains the earlier public wording; removing it needs a history rewrite, which has not been done.
+6. **Dry runs, in this order:**
    ```powershell
    .\windows\Run-Briefing.ps1 -Edition animal -WhatIf          # prints the command, writes nothing
    .\windows\Run-Briefing.ps1 -Edition animal -DryRun -NoDeliver
    .\windows\Run-Briefing.ps1 -Edition animal -NoDeliver        # real run, builds the PDF, sends nothing
    ```
    Read the PDF. Then send one for real: `.\windows\Run-Briefing.ps1 -Edition animal`.
-6. **Schedule.** `.\windows\Register-BriefingTasks.ps1 -Edition animal -WhatIf`, then with `-Enable`. Defaults per edition, in the machine's local time (all overridable):
+7. **Schedule.** `.\windows\Register-BriefingTasks.ps1 -Edition animal -WhatIf`, then with `-Enable`; the same for `-Edition daily`. Defaults per edition, in the machine's local time (all overridable):
 
    | Edition | Start | Repeats | Conductor deadline | Watchdog (`--finish`) |
    |---|---|---|---|---|
@@ -107,7 +113,7 @@ None of the Windows or aiserver steps could be executed from the cloud session t
 
    A third animal task, `Briefing-animal-Release` (18:00, `-Finish`), sends the animal briefing on its own, marked "(late)", if the daily briefing has shipped without it or is overdue; without it a combined-briefing failure would leave the animal briefing unsent. Every scheduled task passes `-Scheduled`: the launcher refuses a start outside the edition's window (animal 06:00-12:30, daily 12:00-18:30) and writes the alert `missed-window` instead, so a machine that was off at 06:30 and wakes at 20:00 does not start a briefing for the wrong hour.
    The animal task produces its PDF but does not email it; the 12:30 daily task sends the combined briefing. The editions are staggered so they never share one five-hour usage window. Keep each watchdog after its edition's `conductor.deadline_local`. Tasks are registered **disabled** unless `-Enable` is given, and even when enabled the first run is **tomorrow's** occurrence: the registration pins each trigger's start boundary to tomorrow. Pass `-AllowToday` only if you want today's occurrence; it is never the default. Nothing runs until you enable the tasks.
-7. **Retire duplicates.** The legacy `\ClaudeCode\Claude-DailyBriefing` task is already disabled; leave it. `briefing-runner-flags.json` currently has `use_codex_for_scheduled_tasks: true`: decide whether the Codex runner should keep sending a second daily briefing. The flags file only gates the legacy launchers, not the conductor.
+8. **Retire duplicates.** The legacy `\ClaudeCode\Claude-DailyBriefing` task is already disabled; leave it. `briefing-runner-flags.json` currently has `use_codex_for_scheduled_tasks: true`: decide whether the Codex runner should keep sending a second daily briefing. The flags file only gates the legacy launchers, not the conductor.
 
 ## 5. Operating it
 
@@ -163,7 +169,7 @@ Extrapolation for a full animal run (measured before the Sonnet defaults; the sl
 
 ## 6. What was and was not verified
 
-**Verified in the build environment** (cloud Linux, real `claude` CLI, real network, no email sent, no Windows desktop, no aiserver): 453 automated tests in the reference runner (67 skipped by design) and 4 in the shared-core suite, including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; and **four full live runs** (two per edition) on 2026-10-26:
+**Verified in the build environment** (cloud Linux, real `claude` CLI, real network, no email sent, no Windows desktop, no aiserver): 464 automated tests in the reference runner (67 skipped by design) and 4 in the shared-core suite, including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; and **four full live runs** (two per edition) on 2026-10-26:
 
 | Run | What happened | Cost (API-equivalent) |
 |---|---|---|

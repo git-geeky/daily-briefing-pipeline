@@ -63,3 +63,23 @@ def load_json_with_private_overlay(
             raise ValueError(f"restore key '{overlay_key}' must be a JSON object")
         overlay = dict(selected)
     return _deep_merge(dict(public_config), overlay)
+
+
+def edition_overlay(edition_id: str, env_var: str = RESTORE_FILE_ENV) -> dict[str, Any]:
+    """The private overlay for one edition (``"edition:<id>"`` in the restore file), or ``{}``.
+
+    The public edition files carry generic text; what is personal to the owner (home region, watch-listed people, extra coverage
+    notes) lives in the restore file outside git and is deep-merged over the public edition when it loads. Only that one key is
+    read: nothing else in the restore file (recipients, secret paths) is ever merged into an edition. A missing or unreadable
+    file is an empty overlay, never an error."""
+    try:
+        payload = _load_restore_payload(env_var)
+    except (OSError, ValueError):
+        return {}
+    selected = payload.get(f"edition:{edition_id}")
+    return dict(selected) if isinstance(selected, Mapping) else {}
+
+
+def apply_overlay(public: dict[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+    return _deep_merge(public, overlay)
+

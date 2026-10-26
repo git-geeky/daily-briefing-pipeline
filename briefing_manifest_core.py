@@ -834,6 +834,7 @@ def build_item_manifest(
         "counterpoint_rows": counterpoint_rows,
         "official_next_48h_sources": dedupe_preserve(official_watch_sources),
         "watch_next_48h": watch_entries,
+        "unlabelled_identifications": find_unlabelled_identifications(body),
         "first_person": find_first_person(body) if EDITION.rules.get("forbid_first_person") else [],
         "process_leaks": find_process_leaks(body) if EDITION.rules.get("forbid_first_person") else [],
         "native_language_sources": native_language_domains(
@@ -1316,6 +1317,9 @@ def evaluate_item_rules(
         )
     elif first_person:
         warnings.append(f"{prefix}: uses the first person ({first_person[0]!r})")
+    if item.get("unlabelled_identifications"):
+        warnings.append(f"{prefix}: names a person the story withholds without stating an identification confidence level "
+                        f"({item['unlabelled_identifications'][0]!r}); add 'identification confidence: High|Moderate' and the matching attributes")
     if item["banned_topics"]:
         blocking.append(f"{prefix}: contains banned topic(s): {', '.join(item['banned_topics'])}")
     if item.get("editorial_boilerplate"):
@@ -1703,6 +1707,32 @@ _ROMAN_CONTEXT = r"(?<!Appendix )(?<!Appendices )(?<!Part )(?<!Annex )(?<!Class 
 FIRST_PERSON_RE = re.compile(
     rf"(?:{_ROMAN_CONTEXT}\bI\s+[a-z]{{2,}}|\bI['\u2019](?:m|ve|ll|d)\b|\b(?:my|me|we|our|ours|us)\b)"
 )
+
+
+_IDENTIFICATION_RE = re.compile(
+    r"(?<![\w])(?:likely|probably|appears to be|is believed to be|is thought to be|identified as)\s+"
+    r"(?!(?:the|a|an|some|many|more|most|new|former|current|first|second|last|next)\b)"
+    r"[A-Z][a-z]+(?:[ '-][A-Z][a-z]+)+"
+)
+_IDENTIFICATION_STOP = {"Supreme", "Court", "Republican", "Democratic", "Democrat", "Senate", "House", "President", "Justice", "Judge", "Federal",
+                        "State", "National", "Congress", "Department", "Commission", "Bank", "Committee", "Administration", "Government", "Times", "Post",
+                        "Journal", "Inc", "Corp", "Company", "University", "Agency", "Ministry", "Council", "Reuters", "Association"}
+_IDENTIFICATION_LABEL_RE = re.compile(r"identification confidence", re.IGNORECASE)
+
+
+def find_unlabelled_identifications(body: str) -> list[str]:
+    """A named identification of a person the story withholds ("likely Jane Roe") must carry its confidence level in the text
+    (``identification confidence: High|Moderate``, see the spec). Returns the identifications that do not. Heuristic: a capitalised
+    name after a hedge word, within 240 characters of no confidence label; organisations and offices are filtered out."""
+    found: list[str] = []
+    for match in _IDENTIFICATION_RE.finditer(body):
+        name = match.group(0)
+        if any(word in _IDENTIFICATION_STOP for word in re.split(r"[ '-]", name)):
+            continue
+        window = body[max(0, match.start() - 240): match.end() + 240]
+        if not _IDENTIFICATION_LABEL_RE.search(window):
+            found.append(name)
+    return found
 
 
 def find_first_person(body: str) -> list[str]:

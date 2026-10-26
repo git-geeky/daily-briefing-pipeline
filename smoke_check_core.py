@@ -83,7 +83,7 @@ def fixture_titles() -> dict[str, list[str]]:
         "part4": [
             "Japan Grid Modernization Runs Into Transmission Permitting Reality",
             "Kyushu Port Digitization Reveals a Quiet Labor Bottleneck",
-            "Osaka Flood-Control Procurement Moves Into an Oversight Phase",
+            "Prefectural Flood-Control Procurement Moves Into an Oversight Phase",
         ],
         "humaninterest": [
             "Neighborhood Volunteers Rebuild a Community Kitchen Block by Block",

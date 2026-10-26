@@ -226,7 +226,7 @@
     "section_briefs": {
       "part1": "General news and geopolitics: the biggest world news stories of the day, hard news with named sources and exact dates.",
       "part2": "AI news: models, funding, regulation, employment, safety and technical breakthroughs. Benchmark and vendor claims get default skepticism.",
-      "part3": "Non-AI tech: cybersecurity, semiconductors, infrastructure, developer tools, open source. Cover the focus company whenever there is material movement; otherwise record a no-update decision.",
+      "part3": "Non-AI tech: cybersecurity, semiconductors, infrastructure, developer tools, open source. Cover the watch-listed company named in the private coverage notes whenever there is material movement; otherwise record a no-update decision.",
       "part4": "Japan: national politics and economy, plus the home-region and arts beats named in the private coverage notes, when material. Watch-listed people named there are included on any substantive development; otherwise record a no-update decision.",
       "humaninterest": "Human interest: acts of courage, unusual lives, small communities, scientific curiosities about people, philanthropy, ordinary people in extraordinary circumstances. Never sports, film/TV, music, celebrities, gaming or entertainment.",
       "updates": "Updates: only prior-briefing stories that materially changed in the last 24 hours; empty is a valid answer."
@@ -239,5 +239,9 @@
       "recipients_env": "DAILY_BRIEFING_RECIPIENTS",
       "extra_recipients_env": "DAILY_BRIEFING_EXTRA_RECIPIENTS"
     }
+  },
+  "private_overlay": {
+    "required": true,
+    "covers": "Part IV regional coverage and watch-list beats"
   }
 }

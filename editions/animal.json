@@ -275,7 +275,7 @@
     "caption_template": "{description}. Photo: {creator}, {license_link}, via {provider} ({page_url}); resized and recompressed for this briefing"
   },
   "conductor": {
-    "slate_candidates": 14,
+    "slate_candidates": 18,
     "digest_items": 6,
     "max_parallel_articles": 2,
     "review_enabled": false,
@@ -335,6 +335,9 @@
       "animals": "Animal science for an expert reader: findings, status decisions, disease events and methods, each built on a primary document.",
       "humaninterest": "Human interest, used only to fill a gap left by animal-science stories that could not be written with confidence: people and animals - field researchers and their long-term study animals, wildlife rehabilitators, keepers, rangers, communities and citizen scientists living with or protecting wildlife. A real person or place, a real sequence of events, named sources; warm but not sentimental. Never animal cruelty or harm as the subject, never pets-and-celebrities, never viral clips."
     },
-    "strip_unread_mentions": true
+    "strip_unread_mentions": true,
+    "slate_reserves": 8,
+    "max_summary_only_quotes": 1,
+    "fill_blocklist": "(?i)\\b(?:prizes?|awards?|awarded|laureates?|honou?rs?|honou?red|appointed|appointments?|elected|nominat\\w*|grants?|funding|funded|fellowships?|scholarships?|training (?:course|programme|program|session)|refresher course|workshops?|conferences?|ceremon\\w*|anniversar\\w*|inaugurat\\w*|launch(?:es|ed)? (?:of )?(?:a |the )?(?:new )?(?:programme|program|campaign|initiative))\\b"
   }
 }

@@ -345,3 +345,42 @@ class VerbatimTierTests(unittest.TestCase):
         report = prov.check_article(article, ["the population fell steadily across all of the surveyed colonies during that decade"],
                                     check_network=False)
         self.assertEqual(report.summary_only_quotes, [])
+
+class DerivedFigureTests(unittest.TestCase):
+    """The writer's own arithmetic is not an unsupported figure when the sources contain its operands (review of the fourth live run)."""
+
+    CORPUS = ["The release lists 164 species, of which 103 are new. Hard coral cover fell from 30.2% to 27.3%. Records: 18 of 434 were livestock. "
+              "The four events began in 2012 and 2024."]
+
+    def check(self, article: str):
+        return prov.check_article("## T\n" + article + "\n", self.CORPUS, check_network=False)
+
+    def test_stated_arithmetic_with_operands_in_the_sources_is_accepted_and_reported_as_derived(self) -> None:
+        report = self.check("By subtraction, computed here, 61 of the 164 were already known, since 103 are new. "
+                            "The relative change is computed from the rounded means: \u22129.6% (27.3 versus 30.2), and the absolute fall is 2.9 percentage points. "
+                            "Livestock were 18 of 434 records, 4.147% (18/434 = 4.147%). The gap is computed here as 12 years (2024 less 2012).")
+        self.assertEqual(report.unmatched_numbers, [])
+        self.assertEqual(sorted(report.derived_numbers), sorted(["61", "9.6%", "2.9", "4.147%", "12"]))
+
+    def test_the_same_figures_without_the_calculation_wording_stay_unverified(self) -> None:
+        report = self.check("Sixty-one were known: 61 of 164 (103 are new). An invented total of 77 appeared.")
+        self.assertEqual({n["text"] for n in report.unmatched_numbers}, {"61", "77"})
+
+    def test_arithmetic_whose_operands_are_not_in_the_sources_is_not_accepted(self) -> None:
+        report = self.check("Computed here, 412 minus 351 leaves 61 animals, and the ratio of 900 to 12 is 75.")
+        self.assertTrue({"412", "351", "61", "900", "75"} <= {n["text"] for n in report.unmatched_numbers})
+
+    def test_specimen_identifiers_are_not_claims_but_real_counts_in_the_same_article_are(self) -> None:
+        report = self.check("The holotype is CD13-PAL.2018.3.1.1-3, 5-15 and 18. The survey measured 83 specimens.")
+        self.assertEqual([n["text"] for n in report.unmatched_numbers], ["83"])
+
+    def test_one_summary_only_quotation_can_be_made_a_repair_trigger(self) -> None:
+        quote = '"the population fell steadily across all of the surveyed colonies during that decade"'
+        article = f"## T\nThe report says {quote}.\n"
+        answer = "The page states: the population fell steadily across all of the surveyed colonies during that decade."
+        tolerant = prov.check_article(article, [answer], verbatim_corpus=["unrelated"], check_network=False)
+        strict = prov.check_article(article, [answer], verbatim_corpus=["unrelated"], check_network=False, summary_only_limit=1)
+        self.assertFalse(tolerant.needs_repair())
+        self.assertTrue(strict.needs_repair())
+        self.assertIn("fetch summary", strict.repair_brief())
+

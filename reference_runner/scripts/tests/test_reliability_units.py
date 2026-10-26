@@ -379,6 +379,28 @@ class UnsafeFetchTests(unittest.TestCase):
         self.assertEqual((outcome.flags, c.alerts), ([], []))
 
 
+class FillGateTests(unittest.TestCase):
+    """Human Interest fill-ins must be about people and animals: award, funding and course notices and thin stories never get written."""
+
+    def test_notices_and_thin_stories_are_dropped_from_the_fill_section_only(self) -> None:
+        import json
+
+        edition = json.loads((Path(cc.__file__).parent / "editions" / "animal.json").read_text(encoding="utf-8"))["conductor"]
+        c = cc.Conductor.__new__(cc.Conductor)
+        c.settings = {"fill_sections": {"humaninterest": "animals"}, "fill_blocklist": edition["fill_blocklist"]}
+        c.plan = lambda: {"animals": {}, "humaninterest": {}}
+        story = lambda sid, title, section="humaninterest", material="moderate": {"story_id": sid, "title": title, "angle": "", "section": section, "material": material}
+        report = types.SimpleNamespace(dropped=[], kept=[
+            story("a", "Wang Ding receives the 2026 Kiessling Prize"), story("b", "Rangers complete a three-week refresher course"),
+            story("c", "A ranger's winter feeding rounds for stranded seals"), story("d", "Villagers rebuilt a heron colony", material="thin"),
+            story("e", "Rehabilitator raises orphaned owls for a decade"),
+            story("f", "Society honours prize-winning study of grants and funding in wolf recovery", section="animals"),
+        ])
+        c._gate_fill_entries(report)
+        self.assertEqual([e["story_id"] for e in report.kept], ["c", "e", "f"], "science stories are never touched by the fill-in gate")
+        self.assertEqual({d["entry"] for d in report.dropped}, {"a", "b", "d"})
+
+
 class LockRebootTests(unittest.TestCase):
     def test_a_lock_written_before_a_reboot_is_dead_even_if_its_pid_now_belongs_to_another_process(self) -> None:
         boot = cc.boot_epoch()

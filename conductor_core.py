@@ -70,6 +70,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # {"humaninterest": "animals"}: stories of the first section are written only to fill what the second could not (low-confidence
     # or unusable stories), up to the section's maximum, and never as part of the target count.
     "fill_sections": {}, "fill_reserves": 4,
+    # A fill-in is a story about people and animals: titles and angles matching this pattern (prizes, appointments, funding, courses)
+    # and fill-ins the slate itself calls thin are dropped before anything is written.
+    "fill_blocklist": "",
+    # Quotations found only in a fetch summary (not in page text the script fetched) that are tolerated before a repair is asked for.
+    "max_summary_only_quotes": 3,
     "section_briefs": {},
     "timezone": "Asia/Tokyo", "deadline_local": "11:30",
     "models": {
@@ -891,6 +896,24 @@ class Conductor:
             f"- {section} ({self.edition.section_titles.get(section, section)}): target {q['target']}, minimum {q['min']}, maximum {q['max']}"
             for section, q in self.plan().items())
 
+    def _gate_fill_entries(self, report: Any) -> None:
+        """Keep only fill-in stories (Human Interest) that are about people and animals and are not thin."""
+        fill = self.fill_sections()
+        if not fill:
+            return
+        pattern = re.compile(str(self.settings.get("fill_blocklist") or "(?!x)x"))
+        kept = []
+        for entry in report.kept:
+            if entry.get("section") in fill:
+                text = f"{entry.get('title', '')}. {entry.get('angle', '')}"
+                if pattern.search(text) or entry.get("material") == "thin":
+                    report.dropped.append({"entry": entry.get("story_id"), "title": str(entry.get("title", ""))[:100],
+                                           "reason": "a fill-in must be a story about people and animals with solid sources, not an award, appointment, "
+                                                     "funding or course notice, and not thin"})
+                    continue
+            kept.append(entry)
+        report.kept = kept
+
     def stage_slate(self) -> None:
         if self.state.done("slate") and Path(self.ctx.slate_path(self.date)).exists():
             return
@@ -924,6 +947,7 @@ class Conductor:
             except ValueError as exc:
                 self.log(f"slate attempt {attempt}: unusable output ({exc})")
                 continue
+            self._gate_fill_entries(report)
             if len([e for e in report.kept if e.get("section") not in fill]) >= self.total_min():
                 break
             self.log(f"slate attempt {attempt}: only {len(report.kept)} valid stories")
@@ -973,6 +997,7 @@ class Conductor:
             extra = slate_core.validate_slate(
                 slate_core.extract_json(result.text), prior_titles=prior + [s["title"] for s in report.kept], banned_check=banned,
                 sections=tuple(plan) if (multi or fill) else (), default_section=None if multi else self.article_section)
+            self._gate_fill_entries(extra)
         except (ValueError, Deferred, HumanActionNeeded) as exc:
             self.log(f"slate reserves unavailable: {exc}")
             return
@@ -1295,7 +1320,8 @@ class Conductor:
             # Quotations are verified against page text the script fetched; what a fetch call *summarised* counts for figures only.
             prov = provenance_core.check_article(
                 article, corpus, json_fetcher=self.json_fetcher, url_checker=self.url_checker, check_network=self.check_network,
-                verbatim_corpus=dossier.corpus() if dossier else None)
+                verbatim_corpus=dossier.corpus() if dossier else None,
+                summary_only_limit=int(self.settings.get("max_summary_only_quotes", 3)))
             tax = self.check_taxonomy(article)
             tax_bad = bool(tax and tax.needs_repair())
             word_only = bool(blocking) and all("hard word floor" in b for b in blocking)
@@ -1346,6 +1372,7 @@ class Conductor:
 
         outcome.words = int(item.get("word_count", 0))
         outcome.provenance = prov.to_dict()
+        outcome.provenance["unread_mentions"] = len(tools.find_unread_source_mentions(article))  # what is left after repair, for the trend
         if tax is not None:
             outcome.provenance["taxonomy"] = tax.to_dict()
             if tax.needs_repair():
@@ -1864,6 +1891,7 @@ class Conductor:
             "numbers_checked": total("numbers_checked"), "numbers_unmatched": sum(len(p.get("unmatched_numbers") or []) for p in prov),
             "quotes_checked": total("quotes_checked"), "quotes_unmatched": sum(len(p.get("unmatched_quotes") or []) for p in prov),
             "quotes_summary_only": total("summary_only_quotes"), "quotes_translated": total("translated_quotes"),
+            "unread_mentions_remaining": total("unread_mentions"), "numbers_derived": sum(len(p.get("derived_numbers") or []) for p in prov),
             "articles_flagged": sum(1 for m in metas if m.get("flags")), "attempts_total": sum(int(m.get("attempts") or 0) for m in metas),
             "cost_usd": round(float(self.state.state.get("spent_usd", 0.0)), 2), "output_tokens": int(self.state.state.get("output_tokens", 0)),
             "notes": len(self.state.state.get("delivery_notes") or []),

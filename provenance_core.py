@@ -59,6 +59,10 @@ class NumberClaim:
     forms: tuple[str, ...]
     context: str
     matched: bool = False
+    value: float | None = None       # the figure as a number (a percentage stays as written: 9.6 for "9.6%")
+    window: str = ""                 # the surrounding prose, where the operands of a stated calculation appear
+    sentence: str = ""               # the claim's own sentence: the calculation wording must be here, not merely nearby
+    decimals: int = 0
 
 
 @dataclass
@@ -68,6 +72,8 @@ class ProvenanceReport:
     unmatched_numbers: list[dict] = field(default_factory=list)
     quotes_checked: int = 0
     unmatched_quotes: list[str] = field(default_factory=list)
+    derived_numbers: list[str] = field(default_factory=list)     # the writer's own arithmetic, reproduced from figures that are in the sources
+    summary_only_limit: int = 3                                  # how many summary-only quotations are tolerated before a repair
     translated_quotes: list[str] = field(default_factory=list)   # marked as the writer's translation, with a verified original beside it
     summary_only_quotes: list[str] = field(default_factory=list)  # found only in a fetch *answer* (a small model's words), not in page text
     dois: dict[str, dict] = field(default_factory=dict)
@@ -89,7 +95,7 @@ class ProvenanceReport:
             self.unmatched_quotes
             or self.bad_dois
             or self.dead_urls
-            or len(self.summary_only_quotes) >= 3
+            or len(self.summary_only_quotes) >= max(1, self.summary_only_limit)
             or (self.numbers_checked >= 8 and self.unmatched_ratio > max_ratio)
             or (self.numbers_checked >= 3 and unmatched >= 3 and self.unmatched_ratio > 0.5)  # a short article of invented figures
             or unmatched > max_unmatched
@@ -107,6 +113,7 @@ class ProvenanceReport:
             "unmatched_ratio": round(self.unmatched_ratio, 3), "unmatched_numbers": self.unmatched_numbers[:60],
             "quotes_checked": self.quotes_checked, "unmatched_quotes": self.unmatched_quotes[:20],
             "translated_quotes": len(self.translated_quotes), "summary_only_quotes": len(self.summary_only_quotes),
+            "derived_numbers": self.derived_numbers[:30],
             "dois": self.dois, "dead_urls": self.dead_urls, "unknown_urls": self.unknown_urls[:40],
             "corpus_chars": self.corpus_chars,
         }
@@ -118,7 +125,7 @@ class ProvenanceReport:
             lines.append(f'- number "{item["text"]}" in: ...{item["context"]}...')
         for quote in self.unmatched_quotes[:10]:
             lines.append(f'- quotation not found in any opened source: "{quote[:160]}"')
-        if len(self.summary_only_quotes) >= 3:
+        if len(self.summary_only_quotes) >= max(1, self.summary_only_limit):
             for quote in self.summary_only_quotes[:6]:
                 lines.append(f'- quotation found only in a fetch summary, not in page text (paraphrase it or quote what the page itself says): "{quote[:140]}"')
         for doi in self.bad_dois:
@@ -230,6 +237,25 @@ def _is_checkable(int_part: str, frac: str | None, tail: str, context_before: st
     return True
 
 
+# A specimen or accession identifier ("CD13-PAL.2018.3.1.1-3, 5-15 and 18"): the bare integers listed beside it are parts of an ID, not claims.
+_IDENTIFIER_RE = re.compile(r"(?<![\d.])[A-Za-z][\w-]*\.\d{2,4}(?:\.\d+){2,}")
+
+
+def _sentence_around(text: str, start: int, end: int) -> str:
+    left = max(text.rfind(". ", 0, start), text.rfind("\n", 0, start))
+    right_candidates = [i for i in (text.find(". ", end), text.find("\n", end)) if i != -1]
+    return text[left + 1: min(right_candidates) if right_candidates else len(text)]
+
+
+def _claim_value(int_part: str, frac: str | None, tail: str) -> float | None:
+    try:
+        value = float(int_part.replace(",", "") + (f".{frac}" if frac else ""))
+    except ValueError:
+        return None
+    kind, word = _tail_kind(tail)
+    return value * _SCALE_CANON[word][1] if kind == "scale" else value
+
+
 def extract_numeric_claims(markdown: str) -> list[NumberClaim]:
     text = _strip_non_prose(markdown)
     claims: list[NumberClaim] = []
@@ -238,14 +264,69 @@ def extract_numeric_claims(markdown: str) -> list[NumberClaim]:
         before = text[max(0, match.start() - 14): match.start()]
         if not _is_checkable(match.group("int"), match.group("frac"), match.group("tail") or "", before):
             continue
-        forms = _forms(match.group("int"), match.group("frac"), match.group("tail") or "")
+        tail = match.group("tail") or ""
+        if not match.group("frac") and not tail.strip() and len(match.group("int").replace(",", "")) <= 3 \
+                and _IDENTIFIER_RE.search(_sentence_around(text, match.start(), match.end())):
+            continue
+        forms = _forms(match.group("int"), match.group("frac"), tail)
         shown = match.group(0).strip()
         if forms in seen:
             continue
         seen.add(forms)
         context = re.sub(r"\s+", " ", text[max(0, match.start() - 60): match.end() + 40]).strip()
-        claims.append(NumberClaim(text=shown, forms=forms, context=context))
+        window = re.sub(r"\s+", " ", text[max(0, match.start() - 300): match.end() + 300])
+        claims.append(NumberClaim(text=shown, forms=forms, context=context, value=_claim_value(match.group("int"), match.group("frac"), tail),
+                                  window=window, sentence=_sentence_around(text, match.start(), match.end()),
+                                  decimals=len(match.group("frac") or "")))
     return claims
+
+
+# --------------------------------------------------------------------------------------------
+# The writer's own arithmetic
+# --------------------------------------------------------------------------------------------
+_DERIVATION_CUE_RE = re.compile(r"(?i)\b(?:comput|calculat|deriv|subtract|difference|ratio|sum of|total of|divid|multipl|percentage points?|out of)\w*|[=\u00f7\u00d7]")
+
+
+def _numeric_values(known: set[str]) -> list[float]:
+    values: set[float] = set()
+    for form in known:
+        if re.fullmatch(r"\d+(?:\.\d+)?", form):
+            values.add(float(form))
+    return sorted(values)
+
+
+def _near(values: list[float], target: float, *, relative: float = 0.002, absolute: float = 1e-9) -> bool:
+    import bisect
+
+    tolerance = max(abs(target) * relative, absolute)
+    index = bisect.bisect_left(values, target - tolerance)
+    return index < len(values) and values[index] <= target + tolerance
+
+
+def derivable(claim: NumberClaim, known_values: list[float]) -> bool:
+    """True when ``claim`` is arithmetic the writer says it did ("computed here", "by subtraction", "18/434") and the result can be
+    reproduced from two figures that appear both in the sources and in the article's own text beside the claim. High precision on
+    purpose: without the cue wording, or without both operands in the sources, a figure stays unverified."""
+    if claim.value is None or not _DERIVATION_CUE_RE.search(claim.sentence):
+        return False
+    operands: set[float] = set()
+    for match in _NUMBER_RE.finditer(claim.window):
+        value = _claim_value(match.group("int"), match.group("frac"), match.group("tail") or "")
+        if value is not None and _near(known_values, value, relative=1e-9, absolute=1e-9):
+            operands.add(value)
+    operands = set(sorted(operands)[:40])
+    target = claim.value
+    tolerance = max(abs(target) * 0.006, 0.5 * 10 ** -claim.decimals)
+    for a in operands:
+        for b in operands:
+            if a == b:
+                continue
+            results = [a - b, a + b, a * b]
+            if b:
+                results += [a / b, 100 * a / b, 100 * (a - b) / b]
+            if any(abs(abs(result) - target) <= tolerance for result in results):
+                return True
+    return False
 
 
 _EU_THOUSANDS_RE = re.compile(r"(?<![\w.,])\d{1,3}(?:[. \u00a0\u202f]\d{3})+(?:,(?P<frac>\d+))?(?![\w])")
@@ -495,20 +576,25 @@ def check_article(
     url_checker: UrlChecker | None = None,
     check_network: bool = True,
     verbatim_corpus: list[str] | None = None,
+    summary_only_limit: int = 3,
 ) -> ProvenanceReport:
     """``corpus`` is everything the writer saw. ``verbatim_corpus`` (when given) is the part that is raw page text fetched by
     the script; the rest is a small model's *answer* about a page. A quotation found only in the answers is reported in
     ``summary_only_quotes``: it is evidence the page said something close, not that the words are the page's own."""
-    report = ProvenanceReport()
+    report = ProvenanceReport(summary_only_limit=summary_only_limit)
     corpus_text = "\n".join(corpus)
     report.corpus_chars = len(corpus_text)
     normalized_corpus = normalize_text(corpus_text)
     known_numbers = corpus_number_set(corpus_text)
 
+    known_values = _numeric_values(known_numbers)
     for claim in extract_numeric_claims(markdown):
         report.numbers_checked += 1
         if any(form in known_numbers for form in claim.forms):
             report.numbers_matched += 1
+        elif derivable(claim, known_values):
+            report.numbers_matched += 1
+            report.derived_numbers.append(claim.text)
         else:
             report.unmatched_numbers.append({"text": claim.text, "context": claim.context})
 

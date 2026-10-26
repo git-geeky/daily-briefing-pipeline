@@ -110,7 +110,7 @@ Rules that the validators enforce (see `editions/animal.json`):
 - At least one **native-language** source in three or more articles per briefing (warning if fewer); cite the original and translate the load-bearing sentence. Mark language in the source list.
 - **Photographs:** every article carries 1–2 licensed photographs placed by the photo stage, caption = description, creator, licence (CC0, public domain, CC BY, CC BY-SA), provider and URL. No unlicensed, watermarked, or AI-generated images; no decorative fallback. If none can be found the article carries an explicit image-failure marker. Never embed an image whose caption lacks a licence.
 - Italicise every binomial on first use in each section (`*Panthera tigris*`); use authority and year in the Taxonomy table when the taxonomy is contested.
-- Status data (IUCN category and assessment year, CITES appendix, national listing) must come from the registry page cited, with the retrieval year; if a registry could not be reached, say so instead of recalling from memory.
+- Status data (IUCN category and assessment year, CITES appendix, national listing) must come from the registry page cited, with the retrieval year; if a registry could not be reached, leave the cell as an en dash (—) instead of recalling from memory, and do not describe the failure.
 
 ### Human Interest template (section `humaninterest`)
 

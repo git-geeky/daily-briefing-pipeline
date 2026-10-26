@@ -286,6 +286,7 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertEqual(len(human), 3, "human interest fills the gap up to its maximum of three")
         self.assertIn("HUMAN INTEREST", result["assembled_text"])
         self.assertIn("Human interest story 1", result["assembled_text"])
+        self.assertTrue(any("4 of 10 target stories were finished; 3 human-interest piece(s) fill the gap" in n for n in result["notes"]), result["notes"])
         self.assertTrue(any("(animals, humaninterest)" in e or "humaninterest" in e for e in result["events"]), result["events"])
         self.assertTrue(result["pdf_exists"] and result["delivered"])
 
@@ -303,6 +304,15 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertEqual(len(science), 5)
         self.assertNotIn("HUMAN INTEREST", result["assembled_text"])
         self.assertTrue(result["pdf_exists"] and result["delivered"], result["events"])
+
+    def test_a_sentence_about_an_unread_source_is_sent_back_once_for_removal(self) -> None:
+        result = run_harness("unread_mention", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertEqual(result["calls"]["repair"], 1)
+        prompt = result["repair_prompts"][0]
+        self.assertIn("Sentences about sources you could not open", prompt)
+        self.assertIn("The full text was not read", prompt)
+        self.assertNotIn("was not read", result["assembled_text"])
 
     def test_a_misspelt_binomial_is_caught_by_the_gbif_lookup_and_repaired(self) -> None:
         result = run_harness("taxonomy_typo", self.fresh())

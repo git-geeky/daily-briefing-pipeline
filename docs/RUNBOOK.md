@@ -169,7 +169,7 @@ Extrapolation for a full animal run (measured before the Sonnet defaults; the sl
 
 ## 6. What was and was not verified
 
-**Verified in the build environment** (cloud Linux, real `claude` CLI, real network, no email sent, no Windows desktop, no aiserver): 464 automated tests in the reference runner (67 skipped by design) and 4 in the shared-core suite, including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; and **four full live runs** (two per edition) on 2026-10-26:
+**Verified in the build environment** (cloud Linux, real `claude` CLI, real network, no email sent, no Windows desktop, no aiserver): 469 automated tests in the reference runner (67 skipped by design) and 4 in the shared-core suite, including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; and **four full live runs** (two per edition) on 2026-10-26:
 
 | Run | What happened | Cost (API-equivalent) |
 |---|---|---|
@@ -177,6 +177,7 @@ Extrapolation for a full animal run (measured before the Sonnet defaults; the sl
 | Animal, second and resume | 10 of 10 articles, 66-page PDF with 20 licensed photographs, "Also noted" 2 items. The first PDF attempt died on a mis-nested bold/italic in one source bullet (fixed: tags balanced, plain-text fallback) | $4.21, about 37 min |
 | Daily, first | Failed: 9 of 12 articles. Causes, all fixed: the heading cleanup renamed "Source bias" to "Primary Sources" (a prefix match; eleven articles); the headline harvest was filtered with the animal keyword list (6 of 156 kept) | $13.59, 27 min |
 | Daily, second | 19 of 21 target articles, closing analysis, 80-page PDF, combined PDF of 148 pages with the animal briefing first | $8.43, 28 min |
+| Animal, fourth (after the quality rules: no Low-confidence articles, Human Interest fill-in, source health) | 6 science articles of 2,279-3,179 words (up from 1,300-2,700), 3 Human Interest fill-ins (641-990 words), 51 pages with 10 licensed photographs. Four of the ten selected stories were dropped by the writer (three `SKIP: low_confidence`, one because its sources did not support the angle); the slate's four reserves were all thin, so three Human Interest stories filled in and three thin reserves were tried and dropped (one was about a different species than the paper, two low confidence). Source health ran on a systemic day (305 of 537 sources failed from the sandbox) and counted nothing. Three of nine articles still carried "was not read" sentences, which led to the unread-source repair trigger | $4.47, 33 min, 128k output tokens; the account's five-hour window was 66% when it started (this session shares it) |
 
 After both editions the account's five-hour window read 27% and the seven-day window 12%. A re-finish of the daily briefing then exposed that the deterministic fallback header produced about 1,100 words for a 600-800 word summary (fixed and tested), so a failed model header can no longer stop the briefing.
 

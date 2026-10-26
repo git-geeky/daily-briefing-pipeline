@@ -110,6 +110,31 @@ class IdentificationConfidenceTests(unittest.TestCase):
         self.assertEqual(self.find("The ruling is likely Supreme Court Justice territory, and the story is likely New York Times coverage next week."), [])
 
 
+class UnreadSourceMentionTests(unittest.TestCase):
+    """A source the writer could not open must not factor into the article; sentences about that access are sent back for removal."""
+
+    ARTICLE = ("## T\n<!-- story: x -->\n\n**Bottom line:** The count rose. Funding and conflict statements were not read.\n\n### The evidence\n"
+               "The survey found 429 tigers. The full PDF text was not readable, so species assignments are not made here. Age data were not available "
+               "for 12 animals in the cohort.\n\n| Claim | Evidence | Limits |\n|---|---|---|\n| a | the source was not accessed | b |\n\n"
+               "### Primary Sources\n- Author. A paper that was unavailable. https://x.org/a\n")
+
+    def test_access_sentences_in_prose_are_found_and_tables_and_source_blocks_are_skipped(self) -> None:
+        found = tools.find_unread_source_mentions(self.ARTICLE)
+        self.assertEqual(len(found), 3)
+        self.assertIn("Funding and conflict statements were not read.", found)
+        self.assertFalse(any("source was not accessed" in s or "paper that was unavailable" in s for s in found))
+
+    def test_a_table_cell_that_only_reports_a_failed_lookup_is_found(self) -> None:
+        table = "## T\n\n| Taxon | IUCN |\n|---|---|\n| Greylag goose | Registry page not retrieved |\n| Pink-footed goose | Not retrieved |\n| Brent goose | LC (2024) |\n"
+        self.assertEqual(tools.find_unread_source_mentions(table), ["Registry page not retrieved", "Not retrieved"])
+
+    def test_http_error_wording_counts(self) -> None:
+        self.assertTrue(tools.find_unread_source_mentions("## T\n\nThe registry returned HTTP 403, so the status is taken from the press release.\n"))
+
+    def test_a_clean_article_has_none(self) -> None:
+        self.assertEqual(tools.find_unread_source_mentions("## T\n\nThe survey counted 429 tigers across five parks. Counts rose in three.\n"), [])
+
+
 class NormalizeTests(unittest.TestCase):
     def test_messy_output_is_repaired_without_touching_content(self) -> None:
         raw = fx.make_article(STORY, words=600, messy=True)

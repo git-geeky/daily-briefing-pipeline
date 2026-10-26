@@ -65,6 +65,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "article_sections": None, "article_section": None, "digest_section": None, "article_min_total": None,
     # An article whose own Confidence line is Low is not written at all, and a story is replaced rather than shipped weak.
     "skip_low_confidence": False,
+    # One repair round removes sentences about sources the writer could not open (they must not factor into the article).
+    "strip_unread_mentions": False,
     # {"humaninterest": "animals"}: stories of the first section are written only to fill what the second could not (low-confidence
     # or unusable stories), up to the section's maximum, and never as part of the target count.
     "fill_sections": {}, "fill_reserves": 4,
@@ -734,8 +736,12 @@ class Conductor:
         articles = self._finished_articles()
         if len(articles) < self.total_min():
             raise StageFailed("finish", f"only {len(articles)} finished article(s); minimum is {self.total_min()}")
-        if len(articles) < self.total_target():
-            notes.append(f"{len(articles)} of {self.total_target()} target stories were finished")
+        fill = self.fill_sections()
+        primary = [a for a in articles if self.section_of(a["story"]) not in fill]
+        if len(primary) < self.total_target():
+            fills = len(articles) - len(primary)
+            notes.append(f"{len(primary)} of {self.total_target()} target stories were finished"
+                         + (f"; {fills} human-interest piece(s) fill the gap" if fills else ""))
         waived = self.state.state["stages"].get("audit", {}).get("waived")
         if waived:
             notes.append(f"the source audit was incomplete ({waived}); stories rest on the sources that could be opened")
@@ -1293,7 +1299,8 @@ class Conductor:
             tax = self.check_taxonomy(article)
             tax_bad = bool(tax and tax.needs_repair())
             word_only = bool(blocking) and all("hard word floor" in b for b in blocking)
-            if not blocking and not prov.needs_repair() and not tax_bad:
+            unread = tools.find_unread_source_mentions(article) if (self.settings.get("strip_unread_mentions") and round_no == 0) else []
+            if not blocking and not prov.needs_repair() and not tax_bad and not unread:
                 break
             if word_only and round_no >= 1:
                 break  # repairs cannot create honest material; let the story be replaced
@@ -1304,6 +1311,11 @@ class Conductor:
                 findings.append("Provenance check (could not be matched to any source opened in this run):\n" + prov.repair_brief())
             if tax_bad:
                 findings.append("Taxonomy and status check (script lookup against the GBIF backbone):\n" + tax.repair_brief())
+            if unread:
+                findings.append("Sentences about sources you could not open (a source you could not read must not factor into the article): "
+                                "remove each one that is about your access to a source, and the claims that rest only on it. Keep a sentence that is about "
+                                "the study or the world (for example 'age data were not available for 12 animals'):\n"
+                                + "\n".join(f'- "{sentence}"' for sentence in unread))
             if word_only:
                 findings.append("The article is below the hard word floor. Add only real, sourced material (open more sources); "
                                 "if there is not enough genuine material, return SKIP: material_limited.")
@@ -1875,7 +1887,6 @@ class Conductor:
         import run_reporting
 
         summaries = [tools.article_summary(a["path"].read_text(encoding="utf-8"), a["story"]) for a in articles]
-        self._write_quality_metrics(articles)
         flagged = [a["story"]["story_id"] for a in articles if (a["meta"].get("flags"))]
         if flagged:
             notes.append(f"figures not fully verified against fetched sources in: {', '.join(flagged)}")
@@ -1898,6 +1909,7 @@ class Conductor:
             atomic_write(combined_html, body_html)
             text_path, html_path = combined_text, combined_html
         self.state.state["delivery_notes"] = notes
+        self._write_quality_metrics(articles)
         undelivered_marker = Path(self.paths.pdf_path(self.date)).with_suffix(".undelivered")
         if self.dry_run or not self.deliver_enabled:
             self.log("delivery skipped (dry run)")

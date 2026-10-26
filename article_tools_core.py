@@ -127,6 +127,44 @@ def _strip_body_links(text: str) -> tuple[str, int]:
 # --------------------------------------------------------------------------------------------
 # Summaries, header, cross-references
 # --------------------------------------------------------------------------------------------
+_UNREAD_SOURCE_RES = (
+    re.compile(r"(?i)\b(?:was|were|is|are|remain(?:s|ed)?|could|can|did|has|have|had)(?:\s+(?:not|never)|n['\u2019]t)\s+(?:been\s+|be\s+)?"
+               r"(?:read|accessed|opened|retrieved|fetched|obtained|viewed|reviewed|readable|reachable|downloaded|loaded|available|checked|verified)\b"),
+    re.compile(r"(?i)\b(?:unavailable|inaccessible|unreadable|paywalled|behind\s+a\s+paywall|not\s+accessible)\b"),
+    re.compile(r"(?i)\bHTTP\s*[45]\d\d\b|\breturned\s+(?:an?\s+)?(?:error|403|404|429)\b"),
+)
+_EMPTY_CELL_RE = re.compile(r"(?i)^\s*(?:registry page |page |source )?not\s+(?:retrieved|read|accessed|available|reached|checked)\b[^|]{0,30}$|^\s*(?:unavailable|inaccessible)\s*$")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z*\"'(\[])")
+
+
+def find_unread_source_mentions(markdown: str, *, limit: int = 6) -> list[str]:
+    """Sentences in the prose that talk about the writer's own access ("the full text was not read", "returned HTTP 403"). A source the
+    writer could not open must not factor into the article, so these are sent back for removal. A heuristic: some hits are about the
+    study ("age data were not available"), which the writer is told to keep. Tables, headings and the source blocks are skipped."""
+    found: list[str] = []
+    skipping = False
+    for line in (markdown or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            skipping = stripped.lstrip("# ").lower().startswith(("primary sources", "watch next", "sources"))
+            continue
+        if skipping or not stripped or stripped.startswith(("!", "<!--", "- http")):
+            continue
+        if stripped.startswith("|"):  # a table cell that only says the source was not reached ("Registry page not retrieved")
+            for cell in stripped.strip("|").split("|"):
+                if _EMPTY_CELL_RE.match(cell):
+                    found.append(re.sub(r"\s+", " ", cell.strip())[:220])
+            if len(found) >= limit:
+                return found[:limit]
+            continue
+        for sentence in _SENTENCE_SPLIT_RE.split(stripped):
+            if any(pattern.search(sentence) for pattern in _UNREAD_SOURCE_RES):
+                found.append(re.sub(r"\s+", " ", sentence)[:220])
+                if len(found) >= limit:
+                    return found
+    return found
+
+
 _CONFIDENCE_LINE_RE = re.compile(r"(?im)^[ \t>]*\*\*confidence:?\*\*:?[ \t]*(.+)$")
 
 

@@ -107,6 +107,9 @@ def script(request: llm.LLMRequest):
             "story_id": re.search(r"<!-- story: ([a-z0-9-]+)", request.prompt.split("# Current article")[1]).group(1),
             "title": re.search(r"(?m)^## (.+)$", request.prompt.split("# Current article")[1]).group(1), "prior_story_id": None}
         sid = story["story_id"]
+        if scenario == "unread_mention" and stage == "article" and sid == "fixture-story-2":
+            clean = clean_for(story)
+            return result_for(clean.replace("### The evidence\n", "### The evidence\n\nThe full text was not read, so the model details are not described here.\n", 1), corpus=clean)
         if scenario.startswith("low_conf") and stage == "article":
             number = int(sid.rsplit("-", 1)[1])
             low_from = {"low_conf_replaced": None, "low_conf_human_fill": 5, "low_conf_human_fill_overflow": 5, "low_conf_ship_fewer": 6}[scenario]

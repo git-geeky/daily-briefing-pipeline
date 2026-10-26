@@ -334,6 +334,7 @@
     "section_briefs": {
       "animals": "Animal science for an expert reader: findings, status decisions, disease events and methods, each built on a primary document.",
       "humaninterest": "Human interest, used only to fill a gap left by animal-science stories that could not be written with confidence: people and animals - field researchers and their long-term study animals, wildlife rehabilitators, keepers, rangers, communities and citizen scientists living with or protecting wildlife. A real person or place, a real sequence of events, named sources; warm but not sentimental. Never animal cruelty or harm as the subject, never pets-and-celebrities, never viral clips."
-    }
+    },
+    "strip_unread_mentions": true
   }
 }

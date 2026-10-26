@@ -1,0 +1,9 @@
+# Runtime dependencies for the shared briefing cores.
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0
+Pillow>=10.0
+reportlab>=4.0
+pypdf>=4.0
+# Optional (adaptive_fetch TLS impersonation; never auto-installed in unattended runs):
+# curl_cffi

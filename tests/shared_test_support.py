@@ -1497,7 +1497,12 @@ class SharedRunnerComparisonTests(unittest.TestCase):
             self._write_runner_state(root / "claude", "claude", checked_count=230, used_source_count=12)
             self._write_runner_state(root / "codex", "codex", checked_count=263, used_source_count=15)
 
-            module_path = Path.home() / "Documents" / "Daily-Briefings" / "pipeline-shared" / "runner_comparison_core.py"
+            module_path = Path(
+                os.environ.get(
+                    "DAILY_BRIEFING_SHARED_ROOT",
+                    str(Path.home() / "Documents" / "Daily-Briefings" / "pipeline-shared"),
+                )
+            ) / "runner_comparison_core.py"
             spec = importlib.util.spec_from_file_location("_test_runner_comparison_core", module_path)
             if spec is None or spec.loader is None:
                 raise RuntimeError(f"Unable to load module: {module_path}")

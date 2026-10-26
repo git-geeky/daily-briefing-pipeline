@@ -4,8 +4,9 @@ when:
 
 steps:
   validate-python-json:
-    image: python:3.12-alpine
+    image: python:3.12-slim
     commands:
+      - pip install --quiet -r requirements.txt
       - |
         python - <<'PY'
         from pathlib import Path
@@ -38,3 +39,6 @@ steps:
             raise SystemExit("\n".join(failures))
         PY
       - python -m unittest discover -s tests -p 'test_*.py' -v
+      # The full shared suite: runs the abstract mixins in tests/shared_test_support.py
+      # against the in-repo reference runner (same wrapper layer production uses).
+      - python -m unittest discover -s reference_runner/scripts/tests -p 'test_*.py' -v

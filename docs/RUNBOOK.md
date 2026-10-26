@@ -90,6 +90,20 @@ To rerun a day from scratch, delete that day's `*-conductor.json` and the `*-art
 * A limit with at least the minimum number of finished articles ships a partial briefing unless the reset is within 90 minutes, in which case the run waits and completes.
 * To spend less: lower `article_sections` targets or `max_parallel_articles`, move `slate`/`header` from Opus to Sonnet, or set `review_enabled: false`.
 
+### Measured cost and time (one live sample each, extrapolated; treat as an estimate)
+
+Measured in the build environment against the real CLI and network on 2026-10-26:
+
+| Stage | Measured | API-equivalent cost |
+|---|---|---|
+| Source audit, 537 sources (24 workers) | 346 s; 242 usable headlines from 50 sources | none (HTTP only) |
+| Slate (Opus, medium, web search) | 150 s, 14.5k output tokens | $0.83 |
+| One article (Sonnet, medium, fetch + search) | ~140 s, 9.5k output tokens | $0.28 |
+| One repair round (Sonnet, low) | ~40 s | $0.12-0.13 |
+| Header (Opus, low, no tools) | seconds | $0.07 |
+
+Extrapolation for a full animal run: about $5-7 and 35-45 minutes (audit 6 min, slate 3, photos 2, ten articles two at a time ~20, digest, header, assemble/validate/PDF ~5). A full daily run (21 stories + closing) is about $8-11 and 50-70 minutes. Your plan is not billed per token, but the account's five-hour window moved by roughly three percentage points per article-sized job in the sample, so **do not run both editions in the same five-hour window**: schedule the animal edition early (06:30) and the daily at least five hours later (the old daily time, around 12:30-13:00 JST, works). The conductor's own utilisation check will defer rather than overrun, but staggering avoids the deferral. The old design spent an unknown multiple of this in a single Opus session at maximum effort, which is what hit the monthly limits.
+
 ### Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -104,9 +118,9 @@ To rerun a day from scratch, delete that day's `*-conductor.json` and the `*-art
 
 ## 6. What was and was not verified
 
-Verified in the build environment (cloud Linux, real `claude` CLI and real network): 249 automated tests including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; one **real** Sonnet article through the real validators and provenance checker; the real `claude -p` stream format, usage and rate-limit fields; the live Wikimedia, iNaturalist and Openverse photo providers.
+Verified in the build environment (cloud Linux, real `claude` CLI and real network): 254 automated tests including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; one **real** Sonnet article through the real validators and provenance checker (including a real repair round that caught a paraphrase inside quotation marks, and a real repair that removed first-person narration without losing content); a **real** source audit, headline ingest and Opus slate for the animal edition on the day's news; a real Opus header; the real `claude -p` stream format, usage and rate-limit fields; the live Wikimedia, iNaturalist and Openverse photo providers.
 
-Not verified, and marked untested in the scripts: everything on the Windows desktop (PowerShell launchers, Task Scheduler registration, `Invoke-RemoteBash`/scp path), the aiserver deployment of the new `deliver_core.py`, a full real ten-article run, real Opus header/closing and Fable review calls, and the experimental Codex backend. Treat the first week as a burn-in: run with `-NoDeliver`, read the PDFs, and watch `-Diagnose`.
+Not verified, and marked untested in the scripts: everything on the Windows desktop (PowerShell launchers, Task Scheduler registration, `Invoke-RemoteBash`/scp path), the aiserver deployment of the new `deliver_core.py`, a full real ten-article run, the real digest, daily closing and Fable review calls, any real run of the daily edition, and the experimental Codex backend. Treat the first week as a burn-in: run with `-NoDeliver`, read the PDFs, and watch `-Diagnose`.
 
 ## 7. Maintenance
 

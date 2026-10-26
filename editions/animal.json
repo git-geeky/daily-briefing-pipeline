@@ -292,7 +292,8 @@
       "standalone": false,
       "held_for": "daily",
       "subject_template": "The Animal Science Briefing - {human_date}",
-      "recipients_env": "ANIMAL_BRIEFING_RECIPIENTS"
+      "recipients_env": "ANIMAL_BRIEFING_RECIPIENTS",
+      "extra_recipients_env": "ANIMAL_BRIEFING_EXTRA_RECIPIENTS"
     }
   }
 }

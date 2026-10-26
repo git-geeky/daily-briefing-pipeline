@@ -234,7 +234,8 @@
     },
     "delivery": {
       "subject_template": "Daily Intelligence Briefing (Claude) - {human_date}",
-      "recipients_env": "DAILY_BRIEFING_RECIPIENTS"
+      "recipients_env": "DAILY_BRIEFING_RECIPIENTS",
+      "extra_recipients_env": "DAILY_BRIEFING_EXTRA_RECIPIENTS"
     }
   }
 }

@@ -101,7 +101,8 @@ def _edition_config(config: dict, edition: str | None) -> dict:
     return merged
 
 
-def _sender_and_recipients(config: dict, recipient: str | Iterable[str] | None) -> tuple[str, list[str]]:
+def _sender_and_recipients(config: dict, recipient: str | Iterable[str] | None,
+                           also: str | Iterable[str] | None = None) -> tuple[str, list[str]]:
     sender = str(config.get("sender") or config.get("default_recipient") or "").strip()
     if not sender:
         raise SystemExit("delivery config has neither 'sender' nor 'default_recipient'")
@@ -112,6 +113,8 @@ def _sender_and_recipients(config: dict, recipient: str | Iterable[str] | None) 
     )
     if not recipients:
         raise SystemExit("no recipient: pass --recipient or set 'recipients'/'default_recipient' in delivery config")
+    # "Also" addresses are added to whoever would receive it anyway, so extending the list can never drop the owner.
+    recipients = parse_recipients([*recipients, *parse_recipients(also)])
     return sender, recipients
 
 
@@ -221,6 +224,7 @@ def send_briefing_email(
     receipt_dir: Path | None = None,
     force: bool = False,
     retries: int = 3,
+    also_recipient: str | Iterable[str] | None = None,
     smtp_factory: Callable[..., smtplib.SMTP] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict:
@@ -231,7 +235,7 @@ def send_briefing_email(
     that the Claude SKILL.md originally required at Step 5).
     """
     config = _edition_config(load_config(config_path), edition)
-    sender, recipients = _sender_and_recipients(config, recipient)
+    sender, recipients = _sender_and_recipients(config, recipient, also_recipient)
     runner_labels: dict = config.get("runner_labels", {})
     label = runner_labels.get(runner.lower(), runner.title())
 
@@ -354,6 +358,7 @@ def main() -> int:
     parser.add_argument("--date", help="Briefing date in YYYY-MM-DD (required for PDF sends).")
     parser.add_argument("--recipient", help="Override recipient(s); comma-separated for several.")
     parser.add_argument("--edition", help="Apply the config's editions.<id> overrides (subject/body/recipients).")
+    parser.add_argument("--also-recipient", help="Extra recipient(s), comma-separated, added to the configured or --recipient ones.")
     parser.add_argument("--body-text-file", type=Path, help="Plaintext body for a PDF send (replaces body_template).")
     parser.add_argument("--body-html-file", type=Path, help="HTML body for a PDF send (sent as multipart/alternative).")
     parser.add_argument("--receipt-dir", type=Path, help="Where delivery receipts live (default: ~/.briefing-delivery-receipts).")
@@ -399,6 +404,7 @@ def main() -> int:
         receipt_dir=args.receipt_dir,
         force=args.force,
         retries=args.retries,
+        also_recipient=args.also_recipient,
     )
     return 0
 

@@ -1607,7 +1607,9 @@ class Conductor:
             label=self.edition.label, human_date=human_date(self.date)) + subject_suffix
         recipients_env = self.edition.get("conductor.delivery.recipients_env")
         recipients = os.environ.get(recipients_env or "", "")
-        mapping = {"{date}": self.date, "{pdf}": str(pdf), "{body_text}": str(text_path), "{body_html}": str(html_path),
+        extra_env = self.edition.get("conductor.delivery.extra_recipients_env")
+        extra_recipients = os.environ.get(extra_env or "", "")
+        mapping = {"{extra_recipients}": extra_recipients, "{date}": self.date, "{pdf}": str(pdf), "{body_text}": str(text_path), "{body_html}": str(html_path),
                    "{edition}": self.edition.edition_id, "{recipients}": recipients, "{subject}": subject}
         argv = []
         for part in command:
@@ -1693,6 +1695,8 @@ def main(argv: list[str] | None = None, *, backend: llm.Backend | None = None) -
     parser.add_argument("--finish", action="store_true", help="Watchdog mode: do not draft; assemble and deliver what exists.")
     parser.add_argument("--diagnose", action="store_true", help="Print the run state and exit.")
     parser.add_argument("--audit-fixture", type=Path, default=None, help="Use a source-audit fixture (no network).")
+    parser.add_argument("--deadline", default=None, metavar="HH:MM|none",
+                        help="Override the edition's local deadline for this run ('none' removes it; for manual runs started late in the day).")
     args = parser.parse_args(argv)
 
     os.environ["BRIEFING_EDITION"] = args.edition
@@ -1705,9 +1709,15 @@ def main(argv: list[str] | None = None, *, backend: llm.Backend | None = None) -
     settings = merge_settings(edition)
     date = args.date or today_in(settings["timezone"])
     scripts_dir = args.scripts_dir or default_scripts_dir()
+    override: dict[str, Any] = {}
+    if args.deadline:
+        if args.deadline.lower() != "none" and not re.fullmatch(r"\d{1,2}:\d{2}", args.deadline):
+            print("error: --deadline must be HH:MM or 'none'", file=sys.stderr)
+            return EXIT_USAGE
+        override["deadline_local"] = None if args.deadline.lower() == "none" else args.deadline
     conductor = Conductor(
         edition=edition, date=date, scripts_dir=scripts_dir, backend=backend or llm.ClaudeBackend(),
-        dry_run=args.dry_run, deliver=not args.no_deliver, audit_fixture=args.audit_fixture,
+        dry_run=args.dry_run, deliver=not args.no_deliver, audit_fixture=args.audit_fixture, settings_override=override,
     )
     if args.diagnose:
         print(conductor.diagnosis())

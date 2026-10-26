@@ -40,7 +40,7 @@ private paths, and secret-file locations belong in a local restore file outside 
 
 The restore file may point to a local encrypted secret file or credential-backed path, but it must
 not be committed and should not contain raw passwords or API tokens. Recipients for the animal
-edition are read from `%USERPROFILE%\.briefing\animal-recipients.txt` (also outside git).
+edition are read from `%USERPROFILE%\.briefing\animal-recipients.txt` and extra recipients (added to the default, never replacing it) from `<edition>-extra-recipients.txt` in the same folder (also outside git).
 
 ## Checks
 

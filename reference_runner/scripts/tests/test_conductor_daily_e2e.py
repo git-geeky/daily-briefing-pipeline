@@ -51,6 +51,8 @@ class DailyConductorTests(unittest.TestCase):
         args = result["deliver_args"]
         self.assertEqual(args[args.index("--edition") + 1], "daily")
         self.assertNotIn("--recipient", args, "no recipients configured: the delivery config's default recipient applies")
+        self.assertEqual(args[args.index("--also-recipient") + 1], "extra@example.com,second@example.com",
+                         "extra recipients are passed separately so they are added to the default, never substituted for it")
         self.assertEqual(result["accounting_errors"], [])
         self.assertEqual(result["usage_calls"], sum(result["calls"].values()))
 

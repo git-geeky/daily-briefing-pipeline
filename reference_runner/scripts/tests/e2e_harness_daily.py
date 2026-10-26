@@ -100,8 +100,10 @@ deliver_script = root / "fake_deliver.py"
 deliver_script.write_text("import json, sys\nfrom pathlib import Path\nPath(sys.argv[1]).write_text(json.dumps(sys.argv[2:]))\nprint('Email sent')\n", encoding="utf-8")
 os.environ["BRIEFING_DELIVER_COMMAND"] = json.dumps([sys.executable, str(deliver_script), str(deliver_log), "--pdf", "{pdf}", "--date", "{date}",
                                                      "--edition", "{edition}", "--body-text-file", "{body_text}", "--body-html-file", "{body_html}",
-                                                     "--subject", "{subject}", "--recipient", "{recipients}"])
+                                                     "--subject", "{subject}", "--recipient", "{recipients}",
+                                                     "--also-recipient", "{extra_recipients}"])
 os.environ.pop("DAILY_BRIEFING_RECIPIENTS", None)
+os.environ["DAILY_BRIEFING_EXTRA_RECIPIENTS"] = "extra@example.com,second@example.com"
 
 if scenario in {"combined", "combined_corrupt"}:
     from reportlab.lib.pagesizes import A4

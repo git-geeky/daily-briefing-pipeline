@@ -22,7 +22,8 @@ param(
     [string]$BodyTextFile = '',
     [string]$BodyHtmlFile = '',
     [string]$Subject = '',
-    [string]$Recipient = ''
+    [string]$Recipient = '',
+    [string]$AlsoRecipient = ''
 )
 
 Set-StrictMode -Version Latest
@@ -94,6 +95,7 @@ if ($BodyHtmlFile -and (Test-Path -LiteralPath $BodyHtmlFile)) {
 }
 if ($Subject)   { $safe = $Subject -replace "'", "'\''"; $extra += " --subject '$safe'" }
 if ($Recipient) { $safe = $Recipient -replace "'", "'\''"; $extra += " --recipient '$safe'" }
+if ($AlsoRecipient) { $safe = $AlsoRecipient -replace "'", "'\''"; $extra += " --also-recipient '$safe'" }
 
 $script = @"
 set -euo pipefail

@@ -266,6 +266,12 @@ class ConductorCliTests(unittest.TestCase):
         self.assertEqual(done.returncode, 2)
         self.assertIn("animal", done.stderr)
 
+    def test_deadline_option_is_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.cli("--edition", "animal", "--date", "2026-10-26", "--deadline", "noon", root=Path(tmp))
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("--deadline", done.stderr)
+
     def test_disabled_pipeline_alerts_instead_of_exiting_silently(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env = {"BRIEFING_DISABLED": "1"}

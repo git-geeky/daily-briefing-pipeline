@@ -341,6 +341,16 @@ class DeliveryTests(unittest.TestCase):
         self._send(edition="animal")
         self.assertEqual(len(FakeSMTP.instances), before + 2)
 
+    def test_also_recipients_are_added_to_the_default_and_never_replace_it(self) -> None:
+        result = self._send(also_recipient="reader2@example.com; owner@example.com")
+        self.assertEqual(result["recipients"], ["owner@example.com", "reader2@example.com"])
+        send = next(call for call in FakeSMTP.instances[0].calls if call[0] == "send")
+        self.assertEqual(send[3], ["owner@example.com", "reader2@example.com"])
+
+    def test_also_recipients_extend_an_explicit_recipient_override_too(self) -> None:
+        result = self._send(recipient="a@example.com", also_recipient="b@example.com")
+        self.assertEqual(result["recipients"], ["a@example.com", "b@example.com"])
+
     def test_new_recipient_is_not_suppressed_by_old_receipt(self) -> None:
         self._send()
         before = len(FakeSMTP.instances)

@@ -27,6 +27,8 @@
     Run every stage except the model limits probe and the delivery email.
 .PARAMETER NoDeliver
     Real run that builds the PDF but sends nothing.
+.PARAMETER NoDeadline
+    Ignore the edition's local deadline for this run (manual runs started late in the day would otherwise stop drafting at once).
 .PARAMETER WhatIf
     Show the resolved command and environment without running anything (creates nothing).
 
@@ -43,6 +45,7 @@ param(
     [switch]$Diagnose,
     [switch]$DryRun,
     [switch]$NoDeliver,
+    [switch]$NoDeadline,
     [switch]$WhatIf
 )
 
@@ -124,17 +127,22 @@ try {
     # Delivery goes through the one authorised path: PDF -> scp -> aiserver deliver_core.py (SMTP app password).
     $env:BRIEFING_DELIVER_COMMAND = (@('powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $deliverScript,
             '-Date', '{date}', '-Edition', '{edition}', '-PdfPath', '{pdf}', '-BodyTextFile', '{body_text}',
-            '-BodyHtmlFile', '{body_html}', '-Subject', '{subject}', '-Recipient', '{recipients}') | ConvertTo-Json -Compress)
+            '-BodyHtmlFile', '{body_html}', '-Subject', '{subject}', '-Recipient', '{recipients}', '-AlsoRecipient', '{extra_recipients}') | ConvertTo-Json -Compress)
     $env:BRIEFING_ALERT_COMMAND = (@('powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $alertScript,
             '-Subject', '{subject}', '-BodyFile', '{body_file}') | ConvertTo-Json -Compress)
 
-    # Recipients live outside git, one file per edition (comma- or newline-separated). The environment variable
-    # name must match the edition's conductor.delivery.recipients_env.
+    # Recipients live outside git, two optional files per edition (comma- or newline-separated). The environment variable
+    # names must match the edition's conductor.delivery.recipients_env / extra_recipients_env.
+    #   <edition>-recipients.txt        REPLACES the delivery config's default recipient (use only to change who the owner is)
+    #   <edition>-extra-recipients.txt  is ADDED to the default recipient, so extending the list can never drop the owner
     $recipientFile = Join-Path $home_ ".briefing\$Edition-recipients.txt"
-    $recipientVar  = if ($Edition -eq 'animal') { 'ANIMAL_BRIEFING_RECIPIENTS' } else { 'DAILY_BRIEFING_RECIPIENTS' }
-    if (Test-Path -LiteralPath $recipientFile) {
-        $addresses = (Get-Content -LiteralPath $recipientFile -Raw) -split '[,;\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '@' }
-        Set-Item -Path "Env:$recipientVar" -Value ($addresses -join ',')
+    $extraFile     = Join-Path $home_ ".briefing\$Edition-extra-recipients.txt"
+    $prefix        = if ($Edition -eq 'animal') { 'ANIMAL_BRIEFING' } else { 'DAILY_BRIEFING' }
+    foreach ($pair in @(@($recipientFile, "${prefix}_RECIPIENTS"), @($extraFile, "${prefix}_EXTRA_RECIPIENTS"))) {
+        if (Test-Path -LiteralPath $pair[0]) {
+            $addresses = (Get-Content -LiteralPath $pair[0] -Raw) -split '[,;\r\n]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '@' }
+            Set-Item -Path ("Env:" + $pair[1]) -Value ($addresses -join ',')
+        }
     }
 
     $argsList = @('-3', $conductor, '--edition', $Edition, '--scripts-dir', $scriptsDir)
@@ -143,12 +151,13 @@ try {
     if ($Diagnose)  { $argsList += '--diagnose' }
     if ($DryRun)    { $argsList += '--dry-run' }
     if ($NoDeliver) { $argsList += '--no-deliver' }
+    if ($NoDeadline) { $argsList += @('--deadline', 'none') }
 
     if ($WhatIf) {
         Write-Host "Would run: py $($argsList -join ' ')"
         Write-Host "claude   : $claudeExe"
         Write-Host "Log file : $log"
-        Write-Host "Recipients file present: $(Test-Path -LiteralPath $recipientFile) ($recipientVar)"
+        Write-Host "Recipients file present: $(Test-Path -LiteralPath $recipientFile); extra recipients file present: $(Test-Path -LiteralPath $extraFile)"
         exit 0
     }
 

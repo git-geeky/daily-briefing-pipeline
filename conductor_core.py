@@ -67,6 +67,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "skip_low_confidence": False,
     # One repair round removes sentences about sources the writer could not open (they must not factor into the article).
     "strip_unread_mentions": False,
+    # News: a short caveat attached to one specific figure or claim that is known only second-hand is information the reader needs and stays;
+    # every other sentence about the writer's own access still goes (science: all of them go).
+    "unread_mentions_keep_load_bearing": False,
     # {"humaninterest": "animals"}: stories of the first section are written only to fill what the second could not (low-confidence
     # or unusable stories), up to the section's maximum, and never as part of the target count.
     "fill_sections": {}, "fill_reserves": 4, "slate_reserve_slack": 2,
@@ -1377,10 +1380,15 @@ class Conductor:
             if tax_bad:
                 findings.append("Taxonomy and status check (script lookup against the GBIF backbone):\n" + tax.repair_brief())
             if unread:
+                keep = ("Keep a sentence that is about the world (for example 'age data were not available for 12 animals'), and keep one short caveat "
+                        "that is attached to a specific figure or claim you state and that is known only second-hand (say who reported it and that the "
+                        "original could not be checked, in that claim's own sentence); remove every other sentence about your access, and any claim that "
+                        "rests only on a source you could not open and is not carried by an outlet you did read"
+                        if self.settings.get("unread_mentions_keep_load_bearing") else
+                        "remove each one that is about your access to a source, and the claims that rest only on it. Keep a sentence that is about "
+                        "the study or the world (for example 'age data were not available for 12 animals')")
                 findings.append("Sentences about sources you could not open (a source you could not read must not factor into the article): "
-                                "remove each one that is about your access to a source, and the claims that rest only on it. Keep a sentence that is about "
-                                "the study or the world (for example 'age data were not available for 12 animals'):\n"
-                                + "\n".join(f'- "{sentence}"' for sentence in unread))
+                                + keep + ":\n" + "\n".join(f'- "{sentence}"' for sentence in unread))
             if word_only:
                 findings.append("The article is below the hard word floor. Add only real, sourced material (open more sources); "
                                 "if there is not enough genuine material, return SKIP: material_limited.")

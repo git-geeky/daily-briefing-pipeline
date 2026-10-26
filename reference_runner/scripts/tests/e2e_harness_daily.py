@@ -66,6 +66,13 @@ def script(request: llm.LLMRequest):
                      "title": re.search(r"(?m)^## (.+)$", request.prompt.split("# Current article")[1]).group(1), "prior_story_id": None}
         section = story["story_id"].split("-story-")[0]
         text = dfx.make_daily_article(story, section, words=WORDS)
+        if scenario in {"unread_mention", "unread_caveat_kept"} and story["story_id"] == "part1-story-1":
+            if stage == "article":  # the writer reports its own access trouble, once
+                sentence = "The preprint returned HTTP 429 and was not read, so the model details are not described here."
+                return ok(text.replace("On 2026-10-26 officials confirmed", sentence + " On 2026-10-26 officials confirmed", 1))
+            if scenario == "unread_caveat_kept":  # the repair keeps one caveat attached to a specific second-hand figure
+                caveat = "Reuters, citing the filing, put the figure at 4 billion dollars; the filing itself could not be checked."
+                return ok(text.replace("On 2026-10-26 officials confirmed", caveat + " On 2026-10-26 officials confirmed", 1))
         if scenario == "single_counterpoint_row" and stage == "article" and story["story_id"] == "part1-story-1":
             text = "\n".join(line for line in text.splitlines() if not line.startswith("| The change is temporary"))
         return ok(text)

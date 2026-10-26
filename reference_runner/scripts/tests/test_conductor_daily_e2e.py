@@ -56,6 +56,26 @@ class DailyConductorTests(unittest.TestCase):
         self.assertEqual(result["accounting_errors"], [])
         self.assertEqual(result["usage_calls"], sum(result["calls"].values()))
 
+    def test_a_sentence_about_an_unread_source_is_sent_back_once_and_the_story_is_not_skipped(self) -> None:
+        """Approved after the fifth live run: daily writers also leaked "was not read" / "HTTP 4xx" sentences (39 across 20 articles)."""
+        result = run_daily("unread_mention", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertEqual(result["calls"]["repair"], 1)
+        finding = result["repair_findings"][0]
+        self.assertIn("Sentences about sources you could not open", finding)
+        self.assertIn("The preprint returned HTTP 429 and was not read", finding)
+        self.assertIn("short caveat that is attached to a specific figure or claim", finding)  # the news wording, not the science one
+        self.assertNotIn("was not read", result["assembled_text"])
+        self.assertIn("part1-story-1", result["articles_done"])
+        self.assertEqual(result["calls"]["article"], 21)  # the story was repaired, not replaced or skipped
+
+    def test_a_caveat_attached_to_a_specific_second_hand_figure_survives_the_repair(self) -> None:
+        result = run_daily("unread_caveat_kept", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertEqual(result["calls"]["repair"], 1)  # asked once: the caveat is not asked about again
+        self.assertIn("the filing itself could not be checked", result["assembled_text"])
+        self.assertNotIn("HTTP 429", result["assembled_text"])
+
     def test_a_day_with_no_updates_shows_no_empty_updates_heading(self) -> None:
         """Found in the fifth live run: an empty "PART VI - UPDATES" heading sat directly above the closing analysis."""
         result = run_daily("no_updates", self.fresh())

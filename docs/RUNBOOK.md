@@ -147,13 +147,13 @@ Extrapolation for a full animal run (measured before the Sonnet defaults; the sl
 
 ## 6. What was and was not verified
 
-**Verified in the build environment** (cloud Linux, real `claude` CLI, real network, no email sent, no Windows desktop, no aiserver): 357 automated tests, including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; and **three full live runs** on 2026-10-26:
+**Verified in the build environment** (cloud Linux, real `claude` CLI, real network, no email sent, no Windows desktop, no aiserver): 357 automated tests, including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; and **four full live runs** (two per edition) on 2026-10-26:
 
 | Run | What happened | Cost (API-equivalent) |
 |---|---|---|
 | Animal, first | Failed: 5 of 10 articles finished (minimum 6). Causes, all fixed: a short quoted phrase handed its closing quote to the next quotation (phantom "invented quote"); Dutch `200.000` did not match `200,000`; the catalog-pool minimum blocked three verified articles; the slate returned no reserves | $4.90, 36 min |
 | Animal, second and resume | 10 of 10 articles, 66-page PDF with 20 licensed photographs, "Also noted" 2 items. The first PDF attempt died on a mis-nested bold/italic in one source bullet (fixed: tags balanced, plain-text fallback) | $4.21, about 37 min |
-| Daily, first | Failed: 9 of 12 articles. Causes, all fixed: the heading cleanup renamed "Source bias" to "Primary Sources" (a prefix match; eleven articles); the headline harvest was filtered with the animal keyword list (6 of 156 kept) | $12 (est.) |
+| Daily, first | Failed: 9 of 12 articles. Causes, all fixed: the heading cleanup renamed "Source bias" to "Primary Sources" (a prefix match; eleven articles); the headline harvest was filtered with the animal keyword list (6 of 156 kept) | $13.59, 27 min |
 | Daily, second | 19 of 21 target articles, closing analysis, 80-page PDF, combined PDF of 148 pages with the animal briefing first | $8.43, 28 min |
 
 After both editions the account's five-hour window read 27% and the seven-day window 12%. A re-finish of the daily briefing then exposed that the deterministic fallback header produced about 1,100 words for a 600-800 word summary (fixed and tested), so a failed model header can no longer stop the briefing.

@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import dataclasses
+import html as html_lib
 import json
 import re
 import socket
 import ssl
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -17,6 +20,11 @@ from typing import Any
 
 import briefing_paths as briefing_paths_module
 from run_reporting import ensure_run_attempt, set_step_timing, update_run_report
+
+_SHARED_DIR = str(Path(__file__).resolve().parent)
+if _SHARED_DIR not in sys.path:
+    sys.path.insert(0, _SHARED_DIR)
+import edition_core  # noqa: E402
 
 
 SCHEMA_VERSION = 1
@@ -58,11 +66,17 @@ class SourceCatalogEntry:
     domain: str
     region_tags: tuple[str, ...]
     language_tags: tuple[str, ...]
+    credit_sections: tuple[str, ...] = ()
+    topics: tuple[str, ...] = ()
+    rss_url: str | None = None
+    native_language: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["region_tags"] = list(self.region_tags)
         payload["language_tags"] = list(self.language_tags)
+        payload["credit_sections"] = list(self.credit_sections)
+        payload["topics"] = list(self.topics)
         return payload
 
 
@@ -72,6 +86,12 @@ def iso_now() -> str:
 
 def default_catalog_path() -> Path:
     return Path(__file__).resolve().parent / "references" / "sources.md"
+
+
+def default_catalog_paths() -> list[Path]:
+    """Catalogs for the active edition (daily: sources.md; animal: sources.md + animal-sources.md)."""
+    root = Path(__file__).resolve().parent / "references"
+    return [root / name for name in edition_core.load_edition().catalogs]
 
 
 def source_audit_path(date: str) -> Path:
@@ -112,25 +132,57 @@ def domain_for(url: str) -> str:
     return (parsed.netloc or "").lower().removeprefix("www.")
 
 
-def section_for_bucket(bucket: str) -> str | None:
+# Catalog bucket headings -> sections whose ``min_section_sources`` floor the source counts toward.
+# The previous single-valued mapping left 187 of 364 catalog sources (every native-language,
+# think-tank, economics, OSINT, Europe, Africa, LatAm and science source) with no section at
+# all, so an Iran article sourced from IRNA, Tasnim, Haaretz and CFR earned zero credit while
+# the spec demanded native-language research.
+_BUCKET_CREDIT_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("PART IV", ("part4",)),
+    ("PART III", ("part3",)),
+    ("PART II", ("part2",)),
+    ("PART I", ("part1",)),
+    ("ANIMAL", ("animals", "digest")),
+    ("HUMAN", ("humaninterest",)),
+    ("UPDATE", ("updates",)),
+    ("WIRE SERVICES", ("cross_section",)),
+    ("AGGREGATORS", ("cross_section",)),
+    ("JAPANESE", ("part4", "part1")),
+    ("CHINESE", ("part1", "part2", "part3")),
+    ("TAIWAN", ("part1", "part2", "part3")),
+    ("FARSI", ("part1",)),
+    ("ARABIC", ("part1",)),
+    ("HEBREW", ("part1",)),
+    ("KOREAN", ("part1", "part3")),
+    ("TURKISH", ("part1",)),
+    ("RUSSIAN", ("part1",)),
+    ("OTHER REGIONS", ("part1",)),
+    ("THINK TANKS", ("part1", "part2", "part3")),
+    ("ECONOMICS", ("part1", "part3")),
+    ("EUROPEAN", ("part1", "part2", "part3")),
+    ("AFRICA", ("part1",)),
+    ("LATIN AMERICA", ("part1",)),
+    ("SOUTH & SOUTHEAST ASIA", ("part1", "part3")),
+    ("OSINT", ("part1",)),
+    ("SPACE, CLIMATE", ("part1", "part3")),
+    ("SCIENCE & HEALTH", ("part1", "humaninterest")),
+    ("PODCASTS", ("part1", "part2")),
+)
+
+
+def credit_sections_for_bucket(bucket: str) -> tuple[str, ...]:
     upper = bucket.upper()
-    # Order matters: "PART II/III/IV" all contain "PART I" as a substring,
-    # so the longer roman numerals must be checked first.
-    if "PART IV" in upper:
-        return "part4"
-    if "PART III" in upper:
-        return "part3"
-    if "PART II" in upper:
-        return "part2"
-    if "PART I" in upper:
-        return "part1"
-    if "HUMAN" in upper:
-        return "humaninterest"
-    if "UPDATE" in upper:
-        return "updates"
-    if "WIRE SERVICES" in upper or "AGGREGATORS" in upper:
-        return "cross_section"
-    return None
+    # Order matters: "PART II/III/IV" all contain "PART I" as a substring, so the
+    # longer roman numerals are listed (and matched) first; the first hit wins.
+    for needle, sections in _BUCKET_CREDIT_RULES:
+        if needle in upper:
+            return sections
+    return ()
+
+
+def section_for_bucket(bucket: str) -> str | None:
+    credited = credit_sections_for_bucket(bucket)
+    return credited[0] if credited else None
 
 
 def infer_region_tags(name: str, url: str, bucket: str, why: str) -> tuple[str, ...]:
@@ -165,10 +217,27 @@ def infer_language_tags(name: str, url: str, bucket: str, why: str) -> tuple[str
     return tuple(dict.fromkeys(tags))
 
 
+def _load_catalog_meta(catalog_path: Path) -> dict[int, dict[str, Any]]:
+    """Optional ``<catalog>.meta.json`` sidecar: {"<number>": {lang, region, topics, rss, native_language}}.
+
+    Exact language/region metadata beats the substring heuristics in ``infer_*_tags``
+    (e.g. any row mentioning "china" was tagged Chinese-language).
+    """
+    meta_path = catalog_path.with_suffix(".meta.json")
+    if not meta_path.exists():
+        return {}
+    try:
+        raw = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {int(key): value for key, value in raw.items() if str(key).isdigit() and isinstance(value, dict)}
+
+
 def parse_source_catalog(path: Path | None = None) -> list[SourceCatalogEntry]:
     catalog_path = path or default_catalog_path()
     if not catalog_path.exists():
         raise FileNotFoundError(f"Source catalog not found: {catalog_path}")
+    meta_by_number = _load_catalog_meta(catalog_path)
 
     major_bucket = ""
     sub_bucket: str | None = None
@@ -203,6 +272,13 @@ def parse_source_catalog(path: Path | None = None) -> list[SourceCatalogEntry]:
                 suffix += 1
             source_id = f"{base}-{suffix}"
         seen_ids.add(source_id)
+        meta = meta_by_number.get(catalog_number, {})
+        region_tags = infer_region_tags(name, url, bucket, why)
+        language_tags = infer_language_tags(name, url, bucket, why)
+        if meta.get("region"):
+            region_tags = tuple(dict.fromkeys([str(meta["region"]).lower(), *region_tags]))
+        if meta.get("lang"):
+            language_tags = tuple(dict.fromkeys([str(meta["lang"]).lower(), *(t for t in language_tags if t != "en" or meta["lang"] == "en")]))
         entries.append(
             SourceCatalogEntry(
                 source_id=source_id,
@@ -215,11 +291,140 @@ def parse_source_catalog(path: Path | None = None) -> list[SourceCatalogEntry]:
                 sub_bucket=sub_bucket,
                 section=section_for_bucket(bucket),
                 domain=domain_for(url),
-                region_tags=infer_region_tags(name, url, bucket, why),
-                language_tags=infer_language_tags(name, url, bucket, why),
+                region_tags=region_tags,
+                language_tags=language_tags,
+                credit_sections=credit_sections_for_bucket(bucket),
+                topics=tuple(meta.get("topics") or ()),
+                rss_url=meta.get("rss") or None,
+                native_language=bool(meta.get("native_language", False)),
             )
         )
     return entries
+
+
+def parse_source_catalogs(paths: list[Path] | None = None) -> list[SourceCatalogEntry]:
+    """Parse several catalogs into one list; duplicate catalog numbers across files are an error."""
+    catalogs = paths or default_catalog_paths()
+    combined: list[SourceCatalogEntry] = []
+    seen_numbers: dict[int, Path] = {}
+    index_by_url: dict[str, int] = {}
+    for catalog in catalogs:
+        for entry in parse_source_catalog(catalog):
+            if entry.catalog_number in seen_numbers:
+                raise ValueError(
+                    f"Catalog number {entry.catalog_number} appears in both {seen_numbers[entry.catalog_number]} and {catalog}"
+                )
+            seen_numbers[entry.catalog_number] = catalog
+            if entry.url in index_by_url:
+                # The same URL listed twice would be fetched (and counted) twice; keep one
+                # row but merge the section credit of both listings.
+                kept_index = index_by_url[entry.url]
+                kept = combined[kept_index]
+                merged = tuple(dict.fromkeys([*kept.credit_sections, *entry.credit_sections]))
+                combined[kept_index] = dataclasses.replace(kept, credit_sections=merged)
+                continue
+            index_by_url[entry.url] = len(combined)
+            combined.append(entry)
+    return combined
+
+
+_FEED_HEAD_RE = re.compile(r"<(?:rss|feed|rdf:RDF)\b", re.IGNORECASE)
+_FEED_BLOCK_RE = re.compile(r"<(item|entry)\b.*?</\1>", re.IGNORECASE | re.DOTALL)
+_NAV_WORDS = frozenset({
+    "home", "about", "contact", "login", "log in", "sign in", "subscribe", "menu", "search", "privacy",
+    "terms", "cookie", "cookies", "careers", "advertise", "newsletter", "more", "read more", "donate",
+})
+
+
+def _clean_text(value: str) -> str:
+    value = re.sub(r"<!\[CDATA\[(.*?)\]\]>", r"\1", value, flags=re.DOTALL)
+    value = re.sub(r"<[^>]+>", " ", value)
+    return re.sub(r"\s+", " ", html_lib.unescape(value)).strip()
+
+
+def _feed_field(block: str, *names: str) -> str:
+    for name in names:
+        match = re.search(rf"<{name}\b[^>]*>(.*?)</{name}>", block, re.IGNORECASE | re.DOTALL)
+        if match and _clean_text(match.group(1)):
+            return _clean_text(match.group(1))
+    return ""
+
+
+def _feed_link(block: str) -> str:
+    atom = re.search(r"<link\b[^>]*\bhref=[\"']([^\"']+)[\"'][^>]*>", block, re.IGNORECASE)
+    if atom:
+        return html_lib.unescape(atom.group(1)).strip()
+    return _feed_field(block, "link", "guid")
+
+
+def extract_headlines(markup: str, base_url: str, *, limit: int = 12) -> list[dict[str, str]]:
+    """Cheap headline harvest from a page sample (RSS/Atom, JSON-LD, then front-page anchors).
+
+    The audit already downloads each source's front page; reading it for headlines turns a
+    reachability ping into discovery input at no extra request cost.
+    """
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def add(title: str, url: str, published: str = "") -> None:
+        title = re.sub(r"\s+", " ", title).strip()
+        if not title or len(title) < 20 or len(title) > 220 or len(title.split()) < 4:
+            return
+        if title.lower() in _NAV_WORDS:
+            return
+        absolute = urllib.parse.urljoin(base_url, url.strip()) if url else base_url
+        if absolute.startswith(("mailto:", "javascript:")):
+            return
+        key = absolute.split("#", 1)[0]
+        if key in seen:
+            return
+        seen.add(key)
+        items.append({"title": title, "url": absolute, "published": published})
+
+    head = markup[:3000]
+    if _FEED_HEAD_RE.search(head):
+        for block in _FEED_BLOCK_RE.finditer(markup):
+            body = block.group(0)
+            add(
+                _feed_field(body, "title"),
+                _feed_link(body),
+                _feed_field(body, "pubDate", "published", "updated", "dc:date"),
+            )
+            if len(items) >= limit:
+                return items[:limit]
+        return items[:limit]
+
+    for script in re.finditer(
+        r"<script[^>]+type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>", markup, re.IGNORECASE | re.DOTALL
+    ):
+        try:
+            payload = json.loads(html_lib.unescape(script.group(1)))
+        except json.JSONDecodeError:
+            continue
+        stack = payload if isinstance(payload, list) else [payload]
+        while stack and len(items) < limit:
+            node = stack.pop(0)
+            if isinstance(node, dict):
+                if node.get("headline") and node.get("url"):
+                    add(str(node["headline"]), str(node["url"]), str(node.get("datePublished") or ""))
+                stack.extend(value for value in node.values() if isinstance(value, (dict, list)))
+            elif isinstance(node, list):
+                stack.extend(node)
+
+    try:
+        from bs4 import BeautifulSoup  # type: ignore
+
+        soup = BeautifulSoup(markup, "lxml")
+        for anchor in soup.select("article a[href], h1 a[href], h2 a[href], h3 a[href]"):
+            add(anchor.get_text(" ", strip=True), anchor.get("href", ""))
+            if len(items) >= limit:
+                break
+    except Exception:  # bs4/lxml missing or hostile markup: anchors are best-effort only
+        for match in re.finditer(r"<h[1-3][^>]*>\s*<a\b[^>]*href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", markup, re.IGNORECASE | re.DOTALL):
+            add(_clean_text(match.group(2)), match.group(1))
+            if len(items) >= limit:
+                break
+    return items[:limit]
 
 
 def request_for(url: str) -> urllib.request.Request:
@@ -249,6 +454,7 @@ def check_source(entry: SourceCatalogEntry, *, timeout: float, retries: int) -> 
     bytes_sampled = 0
     status = "checked_failed_after_retry"
     adaptive_fetch: dict[str, Any] = {"used": False}
+    headlines: list[dict[str, str]] = []
 
     for attempt in range(1, attempts + 1):
         try:
@@ -260,6 +466,10 @@ def check_source(entry: SourceCatalogEntry, *, timeout: float, retries: int) -> 
                 bytes_sampled = len(sample)
             if 200 <= int(http_status) < 400:
                 sample_text = sample.decode("utf-8", errors="ignore")
+                try:
+                    headlines = extract_headlines(sample_text, final_url)
+                except Exception:  # never let a parsing quirk change the reachability verdict
+                    headlines = []
                 blocking_signals = detect_blocking_signals(http_status, response_headers, sample_text) if detect_blocking_signals else []
                 body_len = len(sample_text.strip())
                 if blocking_signals or body_len < 300:
@@ -335,6 +545,7 @@ def check_source(entry: SourceCatalogEntry, *, timeout: float, retries: int) -> 
             "duration_seconds": round(ended - started, 3),
             "errors": errors,
             "adaptive_fetch": adaptive_fetch,
+            "items": headlines,
         }
     )
     return payload
@@ -414,6 +625,8 @@ def build_summary(sources: list[dict[str, Any]], *, catalog_count: int) -> dict[
         "catalog_count": catalog_count,
         "source_count": len(sources),
         "checked_count": checked_count,
+        "reachable_count": sum(1 for source in sources if str(source.get("status") or "") in SUCCESS_STATUSES),
+        "items_harvested": sum(len(source.get("items") or []) for source in sources),
         "all_sources_checked": checked_count == catalog_count and len(sources) == catalog_count,
         "failed_after_retry_count": failed_count,
         "unavailable_count": unavailable_count,
@@ -474,6 +687,8 @@ def build_markdown(payload: dict[str, Any]) -> str:
         f"- Status: {payload.get('status')}",
         f"- Catalog sources: {summary.get('catalog_count', 0)}",
         f"- Checked sources: {summary.get('checked_count', 0)}",
+        f"- Reachable (page fetched and readable): {summary.get('reachable_count', 0)}",
+        f"- Headlines harvested: {summary.get('items_harvested', 0)}",
         f"- Failed after retry: {summary.get('failed_after_retry_count', 0)}",
         f"- Degraded source-access results: {summary.get('unavailable_count', 0)}",
     ]
@@ -509,6 +724,7 @@ def generate_source_audit(
     date: str,
     *,
     catalog_path: Path | None = None,
+    catalog_paths: list[Path] | None = None,
     fixture: Path | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     retries: int = DEFAULT_RETRIES,
@@ -518,7 +734,12 @@ def generate_source_audit(
     started_iso = datetime.fromtimestamp(started).astimezone().isoformat()
     generated_at = iso_now()
     ensure_run_attempt(date)
-    catalog = parse_source_catalog(catalog_path)
+    if catalog_paths:
+        catalog = parse_source_catalogs([Path(path) for path in catalog_paths])
+    elif catalog_path:
+        catalog = parse_source_catalog(catalog_path)
+    else:
+        catalog = parse_source_catalogs()  # the active edition's catalogs
     fixture_payload = load_fixture(fixture)
 
     if fixture_payload:
@@ -541,7 +762,9 @@ def generate_source_audit(
         "status": status,
         "request_source": "fixture" if fixture_payload else "live_http",
         "generated_at": generated_at,
-        "catalog_path": str(catalog_path or default_catalog_path()),
+        "catalog_path": str(catalog_path or (catalog_paths[0] if catalog_paths else default_catalog_paths()[0])),
+        "catalog_paths": [str(path) for path in (catalog_paths or ([catalog_path] if catalog_path else default_catalog_paths()))],
+        "edition": edition_core.load_edition().edition_id,
         "summary": summary,
         "sources": sources,
     }
@@ -627,7 +850,13 @@ def generate_source_audit(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check the daily briefing source catalog and write source-audit artifacts.")
     parser.add_argument("--date", required=True, help="Briefing date in YYYY-MM-DD format.")
-    parser.add_argument("--catalog", type=Path, default=None, help="Override sources.md path.")
+    parser.add_argument(
+        "--catalog",
+        type=Path,
+        action="append",
+        default=None,
+        help="Override the catalog path (repeatable). Default: the active edition's catalogs.",
+    )
     parser.add_argument("--fixture", type=Path, default=None, help="Fixture JSON for tests or no-network smoke checks.")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS, help="Per-source HTTP timeout in seconds.")
     parser.add_argument("--retries", type=int, default=DEFAULT_RETRIES, help="Retry count for transient failures.")
@@ -636,7 +865,7 @@ def main() -> int:
 
     payload = generate_source_audit(
         args.date,
-        catalog_path=args.catalog,
+        catalog_paths=args.catalog,
         fixture=args.fixture,
         timeout=args.timeout,
         retries=args.retries,
@@ -664,6 +893,9 @@ __all__ = [
     "generate_source_audit",
     "main",
     "parse_source_catalog",
+    "parse_source_catalogs",
+    "extract_headlines",
+    "credit_sections_for_bucket",
     "stable_source_id",
     "unavailable_reason",
 ]

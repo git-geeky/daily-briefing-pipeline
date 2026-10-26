@@ -1,22 +1,21 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+_SHARED_DIR = str(Path(__file__).resolve().parent)
+if _SHARED_DIR not in sys.path:
+    sys.path.insert(0, _SHARED_DIR)
+import edition_core  # noqa: E402
 
-SECTIONS = (
-    "header",
-    "part1",
-    "part2",
-    "part3",
-    "part4",
-    "humaninterest",
-    "updates",
-    "closing",
-)
+# Section keys come from the active edition (BRIEFING_EDITION, default "daily").
+# For the daily edition this is exactly the historical tuple:
+# header, part1, part2, part3, part4, humaninterest, updates, closing.
+SECTIONS = edition_core.load_edition().all_sections
 
 _ENV_ROOT = "DAILY_BRIEFING_ROOT"
 _ENV_STEM = "DAILY_BRIEFING_STEM"
@@ -134,11 +133,36 @@ class RunnerContext:
     def perplexity_discovery_markdown_path(self, date: str) -> Path:
         return self.generated_dir / f"{self.profile.artifact_stem}-{date}-perplexity-discovery.md"
 
+    def articles_dir(self, date: str) -> Path:
+        """Per-article drafts (resume granularity for the conductor)."""
+        return self.archive_dir / f"{self.profile.artifact_stem}-articles-{date}"
+
+    def ingest_path(self, date: str) -> Path:
+        return self.generated_dir / f"{self.profile.artifact_stem}-{date}-ingest.json"
+
+    def ingest_markdown_path(self, date: str) -> Path:
+        return self.generated_dir / f"{self.profile.artifact_stem}-{date}-ingest.md"
+
+    def slate_path(self, date: str) -> Path:
+        return self.generated_dir / f"{self.profile.artifact_stem}-{date}-slate.json"
+
+    def provenance_path(self, date: str) -> Path:
+        return self.generated_dir / f"{self.profile.artifact_stem}-{date}-provenance.json"
+
+    def conductor_state_path(self, date: str) -> Path:
+        return self.generated_dir / f"{self.profile.artifact_stem}-{date}-conductor.json"
+
+    def delivery_receipt_path(self, date: str) -> Path:
+        return self.generated_dir / f"{self.profile.artifact_stem}-{date}-delivery-receipt.json"
+
+    def email_body_path(self, date: str) -> Path:
+        return self.generated_dir / f"{self.profile.artifact_stem}-{date}-email.html"
+
     def research_vault_dir(self) -> Path:
         override = os.environ.get(_ENV_RESEARCH_VAULT)
         if override:
             return Path(override)
-        if self.profile.briefing_root.name.lower() == "codex":
+        if self.profile.briefing_root.name.lower() in {"codex", *_EDITION_ROOT_SUBDIRS}:
             return self.profile.briefing_root.parent / "research-vault"
         return self.profile.briefing_root / "research-vault"
 
@@ -253,13 +277,45 @@ class RunnerContext:
         return deleted
 
 
+_EDITION_ROOT_SUBDIRS = frozenset(
+    str(name).lower()
+    for name in (
+        (edition_core.load_edition().extra.get("profile") or {}).get("root_subdir"),
+        "animal",
+    )
+    if name
+)
+
+
 def resolve_profile(profile: RunnerProfile) -> RunnerProfile:
+    """Apply env overrides, then edition defaults (stem/label/author/root) for non-daily editions.
+
+    Explicit ``DAILY_BRIEFING_*`` env vars always win, so existing launchers keep working;
+    a non-daily edition only fills in values the launcher did not set, which lets the same
+    runner wrapper produce ``claude-animal-briefing-*`` artifacts under ``<root>/animal``.
+    """
+    edition = edition_core.load_edition()
+    edition_profile = (edition.extra.get("profile") or {}) if edition.edition_id != edition_core.DEFAULT_EDITION else {}
+    runner_name = os.environ.get(_ENV_RUNNER, profile.runner_name)
+
+    root = Path(os.environ.get(_ENV_ROOT, str(profile.briefing_root)))
+    if edition_profile.get("root_subdir") and _ENV_ROOT not in os.environ:
+        root = root / str(edition_profile["root_subdir"])
+
+    stem = os.environ.get(_ENV_STEM)
+    if stem is None:
+        stem = (
+            f"{runner_name}-{edition_profile['stem_suffix']}"
+            if edition_profile.get("stem_suffix")
+            else profile.artifact_stem
+        )
+
     return RunnerProfile(
-        runner_name=os.environ.get(_ENV_RUNNER, profile.runner_name),
-        briefing_root=Path(os.environ.get(_ENV_ROOT, str(profile.briefing_root))),
-        artifact_stem=os.environ.get(_ENV_STEM, profile.artifact_stem),
-        briefing_label=os.environ.get(_ENV_LABEL, profile.briefing_label),
-        briefing_author=os.environ.get(_ENV_AUTHOR, profile.briefing_author),
+        runner_name=runner_name,
+        briefing_root=root,
+        artifact_stem=stem,
+        briefing_label=os.environ.get(_ENV_LABEL, edition_profile.get("label") or profile.briefing_label),
+        briefing_author=os.environ.get(_ENV_AUTHOR, edition_profile.get("author") or profile.briefing_author),
         prepared_by_line=os.environ.get(_ENV_PREPARED_BY, profile.prepared_by_line),
         image_root_mode=profile.image_root_mode,
         feature_flags=dict(profile.feature_flags),

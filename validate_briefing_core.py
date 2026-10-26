@@ -8,7 +8,9 @@ from pathlib import Path
 
 from briefing_manifest import (
     COUNTERPOINT_REQUIRED_SECTIONS,
+    EDITION,
     HARD_NEWS_SECTIONS,
+    IMAGE_LICENSE_RE,
     SECTION_RULES,
     WATCH_REQUIRED_SECTIONS,
     build_assembled_manifest,
@@ -114,15 +116,21 @@ def validate_briefing(
     except (OSError, KeyError, json.JSONDecodeError):
         research_lint = {}
 
-    if assembled_path.stat().st_size < 100 * 1024:
-        blocking_errors.append(f"Assembled markdown is below 100 KB: {assembled_path.stat().st_size} bytes")
+    min_bytes = int(EDITION.rules.get("min_assembled_bytes", 100 * 1024))
+    if assembled_path.stat().st_size < min_bytes:
+        blocking_errors.append(
+            f"Assembled markdown is below {min_bytes // 1024} KB: {assembled_path.stat().st_size} bytes"
+        )
 
     header = manifests["header"]["header"]
-    if not 600 <= header["executive_summary_word_count"] <= 800:
+    summary_low, summary_high = (int(v) for v in EDITION.header.get("exec_summary_words", [600, 800]))
+    if not summary_low <= header["executive_summary_word_count"] <= summary_high:
         blocking_errors.append(
-            f"Header executive summary is outside the 600-800 word range: {header['executive_summary_word_count']}"
+            f"Header executive summary is outside the {summary_low}-{summary_high} word range: "
+            f"{header['executive_summary_word_count']}"
         )
-    if len(header["cross_references"]) < 3:
+    min_cross_refs = int(EDITION.header.get("min_cross_references", 3))
+    if len(header["cross_references"]) < min_cross_refs:
         blocking_errors.append("Header is missing one or more Top 3 Structural Forces cross-references")
     for reference in header["cross_references"]:
         if not any(titles_match(reference, title) for title in title_set):
@@ -136,30 +144,62 @@ def validate_briefing(
         if title not in title_set:
             blocking_errors.append(f'Table of Contents includes a title not present in the briefing: "{title}"')
 
-    if assembled_manifest["summary"]["focus_company_article_count"] < 1:
-        blocking_errors.append("Briefing is missing a focus-company-relevant story")
-    if assembled_manifest["summary"].get("hn_origin_count", 0) < 5:
+    if EDITION.rules.get("focus_beat_required", True) and assembled_manifest["summary"]["focus_company_article_count"] < 1:
+        # briefing-spec: "if there is no material focus-company development, record that
+        # no-update decision in the candidate pool/run report rather than padding".
+        # The validator used to block regardless, which forced padding on quiet days.
+        decision = next(
+            (
+                item
+                for item in candidate_pool.get("no_update_decisions") or []
+                if isinstance(item, dict)
+                and str(item.get("beat")) == "focus_company"
+                and len(str(item.get("reason") or "").strip()) >= 40
+            ),
+            None,
+        )
+        if decision:
+            warnings.append(f"Focus-company beat recorded as no-update: {str(decision['reason']).strip()[:160]}")
+        else:
+            blocking_errors.append(
+                "Briefing is missing a focus-company-relevant story "
+                "(or a no-update decision with a reason in the candidate pool)"
+            )
+    hn_target = int(EDITION.rules.get("hn_target", 5))
+    if hn_target and assembled_manifest["summary"].get("hn_origin_count", 0) < hn_target:
         warnings.append(
-            "Briefing includes fewer than 5 Hacker News-driven stories; "
+            f"Briefing includes fewer than {hn_target} Hacker News-driven stories; "
             "run a second AI/tech discovery pass or record the shortfall explicitly"
         )
     total_inline_images = int(assembled_manifest["summary"].get("total_inline_images") or 0)
     total_high_confidence_images = int(assembled_manifest["summary"].get("total_high_confidence_images") or 0)
     has_image_quality_failure = IMAGE_QUALITY_FAILURE_TEXT in assembled_text
-    if total_inline_images > 1:
-        blocking_errors.append(
-            f"Briefing embeds {total_inline_images} inline images; the final briefing must contain at most one"
-        )
-    elif total_inline_images == 1 and total_high_confidence_images != 1:
-        blocking_errors.append(
-            "Briefing embeds one image, but it is not classified as a validated high-confidence image"
-        )
-    elif total_inline_images == 0:
-        if has_image_quality_failure:
-            warnings.append("Briefing contains no validated image and includes an explicit image-quality failure marker")
-        else:
+    if EDITION.image_mode == "single":
+        if total_inline_images > 1:
             blocking_errors.append(
-                "Briefing contains no validated image and no explicit image-quality failure marker"
+                f"Briefing embeds {total_inline_images} inline images; the final briefing must contain at most one"
+            )
+        elif total_inline_images == 1 and total_high_confidence_images != 1:
+            blocking_errors.append(
+                "Briefing embeds one image, but it is not classified as a validated high-confidence image"
+            )
+        elif total_inline_images == 0:
+            if has_image_quality_failure:
+                warnings.append("Briefing contains no validated image and includes an explicit image-quality failure marker")
+            else:
+                blocking_errors.append(
+                    "Briefing contains no validated image and no explicit image-quality failure marker"
+                )
+    else:
+        max_total = int(EDITION.images.get("max_total", 0) or 0)
+        if max_total and total_inline_images > max_total:
+            blocking_errors.append(
+                f"Briefing embeds {total_inline_images} inline images; this edition allows at most {max_total}"
+            )
+        if total_inline_images != total_high_confidence_images:
+            blocking_errors.append(
+                f"{total_inline_images - total_high_confidence_images} embedded image(s) are not classified as "
+                "validated high-confidence images"
             )
     if not source_audit:
         blocking_errors.append("Source audit artifact is missing; run generate_source_audit.py before drafting or assembly")
@@ -280,6 +320,37 @@ def validate_briefing(
                         f"catalog pool (minimum is {min_section_sources}); open SOURCES.md and pull "
                         f"from the dedicated section list — TIER 0 wires and cross-section sources do not count"
                     )
+            for label in (item.get("missing_required_blocks") or {}).get("blocking", []):
+                blocking_errors.append(f"{prefix}: missing required block: {label}")
+            for label in (item.get("missing_required_blocks") or {}).get("warning", []):
+                warnings.append(f"{prefix}: missing recommended block: {label}")
+            if EDITION.image_mode != "single" and rules.get("image_floor"):
+                per_min = int(EDITION.images.get("per_article_min", 0) or 0)
+                per_max = int(EDITION.images.get("per_article_max", 0) or 0)
+                image_total = item["image_quality"]["total"]
+                if per_min and item["image_quality"]["high_confidence_count"] < per_min:
+                    warnings.append(f"{prefix}: has fewer than {per_min} validated photograph(s)")
+                    low_image_articles.append(
+                        {
+                            "section": section,
+                            "title": item["title"],
+                            "story_id": item["story_id"],
+                            "high_confidence_images": item["image_quality"]["high_confidence_count"],
+                        }
+                    )
+                if per_max and image_total > per_max:
+                    blocking_errors.append(
+                        f"{prefix}: embeds {image_total} images; this edition allows at most {per_max} per article"
+                    )
+                if EDITION.images.get("require_license_line") and image_total:
+                    unlicensed = [
+                        img["alt"][:60] for img in item.get("image_candidates", []) if not IMAGE_LICENSE_RE.search(img["alt"])
+                    ]
+                    if unlicensed:
+                        blocking_errors.append(
+                            f"{prefix}: {len(unlicensed)} image caption(s) carry no licence/credit "
+                            f"(CC BY / CC0 / public domain / press use ...): {unlicensed[0]!r}"
+                        )
             if item["banned_topics"]:
                 blocking_errors.append(f"{prefix}: contains banned topic(s): {', '.join(item['banned_topics'])}")
             if item.get("editorial_boilerplate"):

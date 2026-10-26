@@ -1,0 +1,124 @@
+{
+  "counterpoint": [
+    "part1",
+    "part2",
+    "part3",
+    "part4"
+  ],
+  "hard_news": [
+    "part1",
+    "part2",
+    "part3",
+    "part4"
+  ],
+  "section_rules": {
+    "closing": {
+      "hard_floor": 500,
+      "max_count": 1,
+      "min_count": 1,
+      "min_source_classes": 2,
+      "min_sources": 4,
+      "min_words": 1200,
+      "score_floor": 58,
+      "soft_min_words": 700,
+      "target_count": 1
+    },
+    "humaninterest": {
+      "expansion_score_floor": 72,
+      "hard_floor": 500,
+      "max_count": 3,
+      "min_count": 1,
+      "min_source_classes": 2,
+      "min_sources": 4,
+      "min_words": 1200,
+      "score_floor": 58,
+      "soft_min_words": 700,
+      "target_count": 1
+    },
+    "part1": {
+      "expansion_score_floor": 78,
+      "hard_floor": 700,
+      "image_floor": 1,
+      "max_count": 6,
+      "min_count": 4,
+      "min_section_sources": 2,
+      "min_source_classes": 3,
+      "min_sources": 5,
+      "min_words": 1500,
+      "score_floor": 62,
+      "soft_min_words": 900,
+      "target_count": 5
+    },
+    "part2": {
+      "expansion_score_floor": 80,
+      "hard_floor": 700,
+      "image_floor": 1,
+      "max_count": 9,
+      "min_count": 6,
+      "min_section_sources": 2,
+      "min_source_classes": 3,
+      "min_sources": 5,
+      "min_words": 1500,
+      "score_floor": 64,
+      "soft_min_words": 900,
+      "target_count": 8
+    },
+    "part3": {
+      "expansion_score_floor": 78,
+      "hard_floor": 700,
+      "image_floor": 1,
+      "max_count": 4,
+      "min_count": 2,
+      "min_section_sources": 2,
+      "min_source_classes": 3,
+      "min_sources": 5,
+      "min_words": 1500,
+      "score_floor": 62,
+      "soft_min_words": 900,
+      "target_count": 3
+    },
+    "part4": {
+      "expansion_score_floor": 80,
+      "hard_floor": 700,
+      "image_floor": 1,
+      "max_count": 4,
+      "min_count": 2,
+      "min_section_sources": 2,
+      "min_source_classes": 3,
+      "min_sources": 5,
+      "min_words": 1500,
+      "reader_value_required": true,
+      "score_floor": 64,
+      "soft_min_words": 900,
+      "target_count": 3
+    },
+    "updates": {
+      "expansion_score_floor": 70,
+      "hard_floor": 400,
+      "max_count": 3,
+      "min_count": 0,
+      "min_source_classes": 2,
+      "min_sources": 3,
+      "min_words": 800,
+      "reader_value_required": true,
+      "score_floor": 56,
+      "soft_min_words": 500,
+      "target_count": 1
+    }
+  },
+  "section_titles": {
+    "closing": "CLOSING ANALYSIS",
+    "humaninterest": "PART V - HUMAN INTEREST",
+    "part1": "PART I - GENERAL NEWS",
+    "part2": "PART II - AI NEWS",
+    "part3": "PART III - NON-AI TECH NEWS",
+    "part4": "PART IV - JAPAN NEWS",
+    "updates": "PART VI - UPDATES"
+  },
+  "watch": [
+    "part1",
+    "part2",
+    "part3",
+    "part4"
+  ]
+}

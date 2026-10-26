@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -16,10 +17,15 @@ from briefing_paths import (
     source_audit_path,
 )
 
+_SHARED_DIR = str(Path(__file__).resolve().parent)
+if _SHARED_DIR not in sys.path:
+    sys.path.insert(0, _SHARED_DIR)
+import edition_core  # noqa: E402
 
-HARD_NEWS_SECTIONS = {"part1", "part2", "part3", "part4"}
-COUNTERPOINT_REQUIRED_SECTIONS = {"part1", "part2", "part3", "part4"}
-WATCH_REQUIRED_SECTIONS = {"part1", "part2", "part3", "part4"}
+EDITION = edition_core.load_edition()
+HARD_NEWS_SECTIONS = set(EDITION.hard_news_sections)
+COUNTERPOINT_REQUIRED_SECTIONS = set(EDITION.counterpoint_required_sections)
+WATCH_REQUIRED_SECTIONS = set(EDITION.watch_required_sections)
 FOCUS_COMPANY_TERMS = tuple(
     term.strip().lower()
     for term in os.environ.get("BRIEFING_FOCUS_COMPANY_TERMS", "focus company,focus-company").split(",")
@@ -32,111 +38,10 @@ def mentions_focus_company(text: str) -> bool:
     return any(term in haystack for term in FOCUS_COMPANY_TERMS)
 
 
-SECTION_RULES = {
-    "part1": {
-        "min_count": 4,
-        "target_count": 5,
-        "max_count": 6,
-        "min_words": 1500,
-        "soft_min_words": 900,
-        "hard_floor": 700,
-        "min_sources": 5,
-        "min_source_classes": 3,
-        "min_section_sources": 2,
-        "image_floor": 1,
-        "score_floor": 62,
-        "expansion_score_floor": 78,
-    },
-    "part2": {
-        "min_count": 6,
-        "target_count": 8,
-        "max_count": 9,
-        "min_words": 1500,
-        "soft_min_words": 900,
-        "hard_floor": 700,
-        "min_sources": 5,
-        "min_source_classes": 3,
-        "min_section_sources": 2,
-        "image_floor": 1,
-        "score_floor": 64,
-        "expansion_score_floor": 80,
-    },
-    "part3": {
-        "min_count": 2,
-        "target_count": 3,
-        "max_count": 4,
-        "min_words": 1500,
-        "soft_min_words": 900,
-        "hard_floor": 700,
-        "min_sources": 5,
-        "min_source_classes": 3,
-        "min_section_sources": 2,
-        "image_floor": 1,
-        "score_floor": 62,
-        "expansion_score_floor": 78,
-    },
-    "part4": {
-        "min_count": 2,
-        "target_count": 3,
-        "max_count": 4,
-        "min_words": 1500,
-        "soft_min_words": 900,
-        "hard_floor": 700,
-        "min_sources": 5,
-        "min_source_classes": 3,
-        "min_section_sources": 2,
-        "image_floor": 1,
-        "score_floor": 64,
-        "expansion_score_floor": 80,
-        "reader_value_required": True,
-    },
-    "humaninterest": {
-        "min_count": 1,
-        "target_count": 1,
-        "max_count": 3,
-        "min_words": 1200,
-        "soft_min_words": 700,
-        "hard_floor": 500,
-        "min_sources": 4,
-        "min_source_classes": 2,
-        "score_floor": 58,
-        "expansion_score_floor": 72,
-    },
-    "updates": {
-        "min_count": 0,
-        "target_count": 1,
-        "max_count": 3,
-        "min_words": 800,
-        "soft_min_words": 500,
-        "hard_floor": 400,
-        "min_sources": 3,
-        "min_source_classes": 2,
-        "score_floor": 56,
-        "expansion_score_floor": 70,
-        "reader_value_required": True,
-    },
-    "closing": {
-        "min_count": 1,
-        "target_count": 1,
-        "max_count": 1,
-        "min_words": 1200,
-        "soft_min_words": 700,
-        "hard_floor": 500,
-        "min_sources": 4,
-        "min_source_classes": 2,
-        "score_floor": 58,
-    },
-}
-
-SECTION_FALLBACK_TITLES = {
-    "part1": "PART I - GENERAL NEWS",
-    "part2": "PART II - AI NEWS",
-    "part3": "PART III - NON-AI TECH NEWS",
-    "part4": "PART IV - JAPAN NEWS",
-    "humaninterest": "PART V - HUMAN INTEREST",
-    "updates": "PART VI - UPDATES",
-    "closing": "CLOSING ANALYSIS",
-}
+# Per-section quotas, word bands and source floors live in editions/<edition>.json
+# (editions/daily.json reproduces the historical constants; pinned by tests).
+SECTION_RULES = EDITION.section_rules
+SECTION_FALLBACK_TITLES = EDITION.section_titles
 
 WIRE_TOKENS = ("reuters", "ap news", "ap ", "associated press", "afp")
 OFFICIAL_TOKENS = (
@@ -233,6 +138,105 @@ BANNED_TOPIC_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bbox\s+office\b", re.IGNORECASE), "box office"),
     (re.compile(r"\bmusic\s+(?:gossip|industry\s+news)\b", re.IGNORECASE), "music gossip"),
 )
+# A banned *topic* is something the briefing covers, not a word that happens to appear.
+# Production evidence (2026-06-08 recovery): validators forced accurate technical terms
+# ("Crypto Subsystem", thin-film, ransomware-payment Bitcoin mentions) to be rewritten.
+# A hit now counts only when it is in the title, in the lede, or repeated, and it is
+# discarded when it sits inside a known technical/security context.
+BANNED_TOPIC_MIN_BODY_MENTIONS = 3
+BANNED_TOPIC_LEDE_CHARS = 600
+_I = re.IGNORECASE
+BANNED_TOPIC_ALLOW_SPANS: dict[str, tuple[re.Pattern[str], ...]] = {
+    "crypto": (
+        re.compile(r"(?:kernel|linux|post[-\s]quantum|pqc|quantum[-\s]safe|openssl|hardware|cipher|nist|tls)\s+crypto\b", _I),
+        re.compile(
+            r"\bcrypto[-\s](?:agility|agile|library|libraries|module|modules|api|apis|subsystem|policy|primitive|"
+            r"primitives|stack|accelerator|engine|extension|extensions|algorithm|algorithms|standard|standards|"
+            r"migration|inventory|cbom|offload|hardware)\b",
+            _I,
+        ),
+    ),
+    "film industry": (
+        re.compile(
+            r"(?:thin|dry|photoresist|polymer|plastic|packaging|stretch|window|protective|optical|capacitor|solar|"
+            r"wafer|oxide|nitride|metal|conductive|adhesive|barrier|dielectric|resist|laminate|carbon|graphene|"
+            r"nano|bio|cling|shrink)[-\s]film\b",
+            _I,
+        ),
+        re.compile(
+            r"\bfilm[-\s](?:capacitors?|deposition|transistors?|stack|layers?|thickness|coatings?|solar|"
+            r"resistors?|lithography|photoresist|etch(?:ing)?|substrates?|bulk|acoustic|stress)\b",
+            _I,
+        ),
+    ),
+}
+# Security reporting often names the payment rail; treat as context, not coverage.
+BANNED_TOPIC_ALLOW_WINDOWS: dict[str, tuple[re.Pattern[str], int]] = {
+    "cryptocurrency": (
+        re.compile(
+            r"ransom|extort|decrypt|threat actor|malware|botnet|breach|phishing|sanction|indictment|"
+            r"seiz|forfeit|money[-\s]laundering|darknet|stolen funds|wallet address",
+            _I,
+        ),
+        200,
+    ),
+}
+
+
+def _lede_of(body: str) -> str:
+    cleaned = IMAGE_RE.sub(" ", body)
+    return cleaned.strip()[:BANNED_TOPIC_LEDE_CHARS]
+
+
+def _rule_hits(pattern: re.Pattern[str], label: str, text: str) -> int:
+    spans = [
+        (m.start(), m.end())
+        for allow in BANNED_TOPIC_ALLOW_SPANS.get(label, ())
+        for m in allow.finditer(text)
+    ]
+    window = BANNED_TOPIC_ALLOW_WINDOWS.get(label)
+    hits = 0
+    for match in pattern.finditer(text):
+        start, end = match.span()
+        if any(a <= start and end <= b for a, b in spans):
+            continue
+        if window is not None:
+            context = text[max(0, start - window[1]) : end + window[1]]
+            if window[0].search(context):
+                continue
+        hits += 1
+    return hits
+
+
+def find_banned_topics(title: str, body: str, *, edition=None) -> list[str]:
+    """Return labels of banned topics the article actually covers (see notes above)."""
+    edition = edition or EDITION
+    allowed = None if edition.banned_topic_labels is None else set(edition.banned_topic_labels)
+    rules: list[tuple[re.Pattern[str], str, int]] = [
+        (pattern, label, BANNED_TOPIC_MIN_BODY_MENTIONS)
+        for pattern, label in BANNED_TOPIC_RULES
+        if allowed is None or label in allowed
+    ]
+    for extra in edition.extra_banned_topic_rules:
+        rules.append(
+            (
+                re.compile(extra["pattern"], re.IGNORECASE),
+                str(extra.get("label") or "banned topic"),
+                int(extra.get("min_body_mentions", BANNED_TOPIC_MIN_BODY_MENTIONS)),
+            )
+        )
+    lede = _lede_of(body)
+    found: list[str] = []
+    for pattern, label, min_mentions in rules:
+        if label in found:
+            continue
+        if _rule_hits(pattern, label, title):
+            found.append(label)
+        elif _rule_hits(pattern, label, lede) or _rule_hits(pattern, label, body) >= min_mentions:
+            found.append(label)
+    return found
+
+
 EDITORIAL_BOILERPLATE_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bThat is why this article uses a mixed source stack\b", re.IGNORECASE), "mixed source stack explainer"),
     (re.compile(r"\bThe useful reader posture is disciplined skepticism\b", re.IGNORECASE), "reader posture explainer"),
@@ -297,6 +301,53 @@ PRIMARY_SOURCES_HEADINGS = (
     "**Source Articles**:",
     "**Source Articles:**",
 )
+
+_QUOTE_PAIRS = {'"': '"', "\u201c": "\u201d", "`": "`", "'": "'", "\u2018": "\u2019"}
+_CROSS_REF_LINE_RE = re.compile(r"cross[-\s]reference:\s*(?P<rest>.+)$", re.IGNORECASE)
+_CROSS_REF_PART_PREFIX_RE = re.compile(
+    r"^(?:part\s+[ivx]+(?:\s*,\s*article\s+\d+)?\s*[-\u2013\u2014:]\s*)?(?P<title>.*)$", re.IGNORECASE
+)
+_NARRATIVE_CROSS_REF_RE = HEADER_CROSS_REF_PATTERNS[2]
+
+
+def _cross_reference_title(rest: str) -> str | None:
+    """Parse the quoted title after ``Cross-reference:``.
+
+    The title may legitimately contain apostrophes or the other quote style
+    ("Trump's Beijing Deal"). Production hit this on 2026-06-08: the single-quote
+    pattern matched between two apostrophes inside a double-quoted title and
+    produced a bogus reference, so the validator forced a different article into
+    the header. Parse by opener -> last matching closer on the line instead.
+    """
+    candidate = _CROSS_REF_PART_PREFIX_RE.match(rest.strip()).group("title").strip()
+    candidate = candidate.strip("*_ ")
+    if not candidate or candidate[0] not in _QUOTE_PAIRS:
+        return None
+    opener, closer = candidate[0], _QUOTE_PAIRS[candidate[0]]
+    match = re.match(
+        rf"^{re.escape(opener)}(?P<t>.+){re.escape(closer)}[\s.)\]*_]*$", candidate
+    )
+    if match:
+        return match.group("t").strip() or None
+    # Trailing prose after the closing quote: fall back to the first closer.
+    end = candidate.find(closer, 1)
+    return candidate[1:end].strip() if end > 1 else None
+
+
+def extract_cross_references(text: str) -> list[str]:
+    refs: list[str] = []
+    for line in text.splitlines():
+        found = _CROSS_REF_LINE_RE.search(line)
+        if found:
+            title = _cross_reference_title(found.group("rest"))
+            if title:
+                refs.append(title)
+                continue
+        narrative = _NARRATIVE_CROSS_REF_RE.search(line)
+        if narrative:
+            refs.append(narrative.group(1).strip().rstrip(".").strip('"'))
+    return dedupe_preserve(refs)
+
 
 TOP_LEVEL_TITLE_RE = re.compile(r"(?m)^#\s+(.+)$")
 H2_SPLIT_RE = re.compile(r"(?m)^##\s+")
@@ -493,6 +544,10 @@ def build_assembled_manifest(date: str, manifests: dict[str, dict], *, source_au
             "source_check_status": item.get("source_check_status") or {},
             "source_incorporated": item.get("source_incorporated", False),
             "source_bucket": item.get("source_bucket") or [],
+            "bottom_line": item.get("bottom_line") or "",
+            "confidence_label": item.get("confidence_label") or "",
+            "lede": item.get("lede") or "",
+            "word_count": item.get("word_count", 0),
         }
         for item in all_articles
     ]
@@ -619,11 +674,7 @@ def normalize_section_title(section: str, section_title: str | None) -> str:
 def build_header_manifest(text: str) -> dict:
     executive_summary = extract_named_block(text, ("## Executive Summary",))
     toc_text = extract_named_block(text, ("### Table of Contents",))
-    cross_refs: list[str] = []
-    for pattern in HEADER_CROSS_REF_PATTERNS:
-        for match in pattern.findall(text):
-            cross_refs.append(match.strip().strip('"'))
-    cross_refs = dedupe_preserve(cross_refs)
+    cross_refs = extract_cross_references(text)
     toc_titles: list[str] = []
     for line in toc_text.splitlines():
         stripped = line.strip()
@@ -664,10 +715,8 @@ def build_item_manifest(
     body_without_sources = body.replace(source_block, "")
     body_without_sources = IMAGE_RE.sub("", body_without_sources)
 
-    has_body_links = bool(re.search(r"https?://", body_without_sources))
-    banned_topics = [
-        label for pattern, label in BANNED_TOPIC_RULES if pattern.search(f"{title}\n{body}")
-    ]
+    has_body_links = bool(re.search(r"https?://", strip_watch_block(body_without_sources)))
+    banned_topics = find_banned_topics(title, body)
     editorial_boilerplate = detect_editorial_boilerplate(body)
     relative_time_mentions = RELATIVE_TIME_RE.findall(body)
     has_explicit_jst_date = bool((EXPLICIT_DATE_RE.search(body) and "JST" in body) or valid_briefing_date(date))
@@ -683,23 +732,35 @@ def build_item_manifest(
             if cell:
                 counterpoint_sources.append(cell)
 
+    distinct_source_domains = {
+        registrable_domain(url) for entry in sources for url in _URL_IN_ENTRY_RE.findall(entry)
+    }
     needs_second_pass = False
     if sources:
-        only_thin_classes = len(set(source_classes)) < 3
+        only_thin_classes = len(set(source_classes)) < 3 and len(distinct_source_domains) < 5
         starts_from_thin_anchor = any(
             token in " ".join(sources).lower()
             for token in ("hacker news", "news.ycombinator.com", "ft.com", "wall street journal", "reuters")
         )
         needs_second_pass = starts_from_thin_anchor and only_thin_classes
 
+    marker = STORY_MARKER_RE.search(body)
     prior_story = best_prior_story_match(title, prior_items)
+    if marker and marker.group("prior"):
+        declared = next((i for i in prior_items if str(i.get("story_id")) == marker.group("prior")), None)
+        prior_story = declared or prior_story
     update_of_prior_story = section == "updates" and prior_story is not None
-    story_id = prior_story["story_id"] if prior_story else story_slug(title)
+    if marker:
+        story_id = marker.group("id")
+    else:
+        story_id = prior_story["story_id"] if prior_story else story_slug(title)
     source_matches = match_sources_to_audit(sources, source_audit or {})
     source_ids = [match["source_id"] for match in source_matches]
     source_check_status = {match["source_id"]: match.get("status") for match in source_matches}
     source_buckets = dedupe_preserve([match.get("bucket") for match in source_matches if match.get("bucket")])
-    source_sections_cited = [match.get("section") for match in source_matches if match.get("section")]
+    source_sections_cited = [
+        tag for match in source_matches for tag in (match.get("credit_sections") or ([match["section"]] if match.get("section") else []))
+    ]
     source_incorporated = bool(source_ids)
     discovery_source = "source_audit" if source_incorporated else "supplemental_live_research"
     novelty_score = score_novelty(title, [item["title"] for item in prior_items], update_of_prior_story=update_of_prior_story)
@@ -712,6 +773,8 @@ def build_item_manifest(
         watch_entries=len(watch_entries),
         technical_substance_score=score_technical_substance(section, body),
         novelty_score=novelty_score,
+        unique_domains=len(distinct_source_domains),
+        primary_documents=len(primary_documents),
     )
     preflight = build_preflight_scorecard(
         section=section,
@@ -731,11 +794,24 @@ def build_item_manifest(
         score=score,
     )
 
+    bottom_line_match = BOTTOM_LINE_RE.search(body)
+    confidence_match = CONFIDENCE_LABEL_RE.search(body)
+    scientific_names = dedupe_preserve([m.group("name") for m in SCIENTIFIC_NAME_RE.finditer(body)])
+    required_blocks = evaluate_required_blocks(section, body)
+
     return {
         "title": title,
         "section": section,
         "heading": heading,
         "story_id": story_id,
+        "bottom_line": bottom_line_match.group("text").strip() if bottom_line_match else "",
+        "confidence_label": confidence_match.group("label").capitalize() if confidence_match else "",
+        "lede": extract_lede(body),
+        "scientific_names": scientific_names,
+        "doi_count": len(set(DOI_RE.findall(body))),
+        "image_license_lines": len(IMAGE_LICENSE_RE.findall(" ".join(img["alt"] for img in images))),
+        "missing_required_blocks": required_blocks,
+        "distinct_source_domains": sorted(d for d in distinct_source_domains if d),
         "prior_story_id": prior_story["story_id"] if prior_story else None,
         "quality_failure": quality_failure,
         "word_count": count_words(body_without_sources),
@@ -776,12 +852,11 @@ def build_item_manifest(
     }
 
 
-def load_prior_items(date: str) -> list[dict]:
-    try:
-        current = datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        return []
-    prior_date = (current - timedelta(days=1)).strftime("%Y-%m-%d")
+PRIOR_LOOKBACK_DAYS = 4
+PRIOR_ITEM_LIMIT_DAYS = 2  # merge up to this many *existing* prior days
+
+
+def _load_prior_day_items(prior_date: str) -> list[dict]:
     prior_manifest = assembled_manifest_path(prior_date)
     if prior_manifest.exists():
         try:
@@ -808,6 +883,36 @@ def load_prior_items(date: str) -> list[dict]:
         }
         for heading, _body in split_items(prior_text)
     ]
+
+
+def load_prior_items(date: str) -> list[dict]:
+    """Items from the most recent prior briefing days that exist.
+
+    Looking only at date-1 meant a missed day (or a Monday after a weekend) silently
+    disabled novelty scoring and Updates detection.
+    """
+    try:
+        current = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        return []
+    merged: list[dict] = []
+    seen_ids: set[str] = set()
+    days_found = 0
+    for offset in range(1, PRIOR_LOOKBACK_DAYS + 1):
+        prior_date = (current - timedelta(days=offset)).strftime("%Y-%m-%d")
+        items = _load_prior_day_items(prior_date)
+        if not items:
+            continue
+        days_found += 1
+        for item in items:
+            key = str(item.get("story_id") or item.get("title"))
+            if key in seen_ids:
+                continue
+            seen_ids.add(key)
+            merged.append(item)
+        if days_found >= PRIOR_ITEM_LIMIT_DAYS:
+            break
+    return merged
 
 
 def load_image_metadata(date: str) -> dict[str, dict]:
@@ -839,6 +944,15 @@ def valid_briefing_date(date: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+# Drafters may declare the story identity explicitly (the slate stage assigns it):
+#   <!-- story: iran-hormuz-talks; prior: iran-hormuz-incident -->
+# Title-token matching cannot see that a retitled follow-up is the same story.
+STORY_MARKER_RE = re.compile(
+    r"<!--\s*story:\s*(?P<id>[A-Za-z0-9_.:\-]+)(?:\s*;\s*prior:\s*(?P<prior>[A-Za-z0-9_.:\-]+))?\s*-->"
+)
+STORY_MARKER_LINE_RE = re.compile(r"(?m)^[ \t]*" + STORY_MARKER_RE.pattern + r"[ \t]*\n?")
 
 
 def story_slug(title: str) -> str:
@@ -951,6 +1065,7 @@ def match_sources_to_audit(sources: list[str], source_audit: dict | None) -> lis
                 "status": entry.get("status"),
                 "bucket": entry.get("bucket") or entry.get("major_bucket"),
                 "section": entry.get("section"),
+                "credit_sections": list(entry.get("credit_sections") or ([entry["section"]] if entry.get("section") else [])),
                 "domain": domain,
             }
     return list(matches.values())
@@ -1132,7 +1247,7 @@ def select_section_items(section: str, items: list[dict]) -> dict:
         key=lambda entry: (
             entry[2].get("selection_score", entry[1].get("score", {}).get("overall", 0)),
             entry[1].get("score", {}).get("overall", 0),
-            entry[1].get("word_count", 0),
+            len(entry[1].get("source_classes") or []),
             entry[1].get("source_count", 0),
         ),
         reverse=True,
@@ -1271,6 +1386,28 @@ def extract_primary_sources(text: str) -> list[str]:
     return entries
 
 
+def strip_watch_block(text: str) -> str:
+    """Remove the ``Watch Next 48h`` block; the spec requires a source URL in each bullet."""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not WATCH_NEXT_HEADING_RE.search(line):
+            continue
+        end = index + 1
+        seen_entry = False
+        while end < len(lines):
+            stripped = lines[end].strip()
+            if not stripped:
+                if seen_entry:
+                    break
+            elif stripped.startswith(("## ", "### ")):
+                break
+            else:
+                seen_entry = seen_entry or stripped.removeprefix(">").strip().startswith("- ")
+            end += 1
+        return "\n".join(lines[:index] + lines[end:])
+    return text
+
+
 def extract_watch_entries(text: str) -> list[str]:
     lines = text.splitlines()
     for index, line in enumerate(lines):
@@ -1292,8 +1429,42 @@ def extract_watch_entries(text: str) -> list[str]:
     return []
 
 
+def _markdown_tables(lines: list[str]) -> list[tuple[int, list[str]]]:
+    tables: list[tuple[int, list[str]]] = []
+    current: list[str] = []
+    start = 0
+    for index, line in enumerate(lines + [""]):
+        stripped = line.strip()
+        if stripped.startswith("|"):
+            if not current:
+                start = index
+            current.append(stripped)
+        elif current:
+            tables.append((start, current))
+            current = []
+    return tables
+
+
+def _table_rows(table_lines: list[str]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for table_line in table_lines:
+        if set(table_line.replace("|", "").replace(":", "").strip()) <= {"-", " "}:
+            continue
+        rows.append([cell.strip() for cell in table_line.strip("|").split("|")])
+    return rows
+
+
 def extract_counterpoint_rows(text: str) -> list[list[str]]:
     lines = text.splitlines()
+    # Subagents emit many heading variants ("Source-bias assessment & counterpoints", ...).
+    # The 5-column schema is the real contract, so recognise the table by its header too.
+    for _start, table_lines in _markdown_tables(lines):
+        rows = _table_rows(table_lines)
+        if not rows:
+            continue
+        header = " ".join(rows[0]).lower()
+        if "interested party" in header and ("incentive" in header or "counterpoint" in header):
+            return rows[1:] if len(rows) > 1 else []
     for index, line in enumerate(lines):
         if "counterpoint matrix" not in line.lower():
             continue
@@ -1340,6 +1511,46 @@ def extract_images(text: str, *, image_metadata: dict[str, dict] | None = None) 
             }
         )
     return images
+
+
+BOTTOM_LINE_RE = re.compile(r"(?im)^[ \t>]*\*\*bottom line:?\*\*:?[ \t]*(?P<text>.+)$")
+CONFIDENCE_LABEL_RE = re.compile(r"(?im)^[ \t>]*\*\*confidence:?\*\*:?[ \t]*(?P<label>high|medium|low)\b(?P<rest>.*)$")
+SCIENTIFIC_NAME_RE = re.compile(r"(?<![\w*])\*(?P<name>[A-Z][a-z]{2,}(?: [a-z]{3,}){1,2})\*(?![\w*])")
+DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s)\]>\"'|]+")
+IMAGE_LICENSE_RE = re.compile(
+    r"(?i)\b(?:CC[ -]BY(?:-SA|-NC|-ND)*(?:[ -]\d\.\d)?|CC0|public domain|PD[- ]?(?:US|USGov|old|NASA|textlogo)?|"
+    r"open access|press (?:kit|use|release|image)|used with permission|licen[cs]ed|no known copyright|"
+    r"u\.?s\.? (?:fish and wildlife|geological survey|government)|NOAA|NASA)\b"
+)
+
+
+def extract_lede(body: str, *, limit: int = 600) -> str:
+    """First substantive prose paragraph (skips images, bottom-line/confidence lines, headings)."""
+    for block in re.split(r"\n\s*\n", body):
+        text = block.strip()
+        if not text or text.startswith(("#", "|", "![", ">", "<!--", "- ", "*Rank", "*Taxa")):
+            continue
+        if BOTTOM_LINE_RE.match(text) or CONFIDENCE_LABEL_RE.match(text):
+            continue
+        return re.sub(r"\s+", " ", text)[:limit]
+    return ""
+
+
+def evaluate_required_blocks(section: str, body: str, *, edition=None) -> dict[str, list[str]]:
+    """Check the edition's per-section required blocks (taxonomy card, study card, ...).
+
+    Each block is ``{"id", "label", "severity", "any_of": [regex...], "min_matches": n}``.
+    """
+    edition = edition or EDITION
+    result: dict[str, list[str]] = {"blocking": [], "warning": []}
+    for block in edition.required_blocks.get(section, ()):
+        patterns = block.get("any_of") or []
+        minimum = int(block.get("min_matches", 1))
+        matches = sum(len(re.findall(pattern, body, re.IGNORECASE | re.MULTILINE)) for pattern in patterns)
+        if matches < minimum:
+            severity = "blocking" if block.get("severity") == "blocking" else "warning"
+            result[severity].append(str(block.get("label") or block.get("id") or "required block"))
+    return result
 
 
 def classify_image_kind(alt: str, url: str) -> str:
@@ -1471,47 +1682,145 @@ def classify_images(images: list[dict]) -> dict:
     }
 
 
+# Source classes are decided from the cited URL's registrable domain first. The old
+# substring matching on free text mis-tagged ``microsoft.com`` as paywalled (it
+# contains "ft.com"), "Krebs on Security" as official ("sec"), ``linux.com`` as
+# community ("x.com") and any line containing "heap" as wire ("ap "). Token matching
+# is kept only as a word-boundary fallback for entries that carry no URL.
+_WIRE_DOMAINS = frozenset({
+    "reuters.com", "apnews.com", "afp.com", "kyodonews.net", "english.kyodonews.net", "yna.co.kr",
+    "en.yna.co.kr", "aa.com.tr", "efe.com", "dpa.com", "tass.com", "xinhuanet.com", "english.news.cn",
+})
+_PAYWALLED_DOMAINS = frozenset({
+    "wsj.com", "ft.com", "economist.com", "bloomberg.com", "nytimes.com", "washingtonpost.com",
+    "theinformation.com", "stratechery.com", "asia.nikkei.com", "nikkei.com", "caixin.com", "haaretz.com",
+    "thewirechina.com", "thecapitolforum.com", "semianalysis.com",
+})
+_COMMUNITY_DOMAINS = frozenset({
+    "news.ycombinator.com", "reddit.com", "old.reddit.com", "x.com", "twitter.com", "github.com",
+    "lesswrong.com", "alignmentforum.org", "forum.effectivealtruism.org", "lobste.rs", "stackoverflow.com",
+    "weibo.com", "bsky.app", "mastodon.social", "inaturalist.org",
+})
+_ANALYSIS_DOMAINS = frozenset({
+    "csis.org", "cfr.org", "brookings.edu", "rand.org", "iiss.org", "carnegieendowment.org",
+    "atlanticcouncil.org", "rusi.org", "chathamhouse.org", "piie.com", "aei.org", "cato.org",
+    "crisisgroup.org", "sipri.org", "cset.georgetown.edu", "bruegel.org", "lowyinstitute.org",
+    "warontherocks.com", "foreignaffairs.com", "foreignpolicy.com", "lawfaremedia.org", "justsecurity.org",
+    "epoch.ai", "artificialanalysis.ai", "semianalysis.com", "stratfor.com", "worldview.stratfor.com",
+})
+_RESEARCH_DOMAINS = frozenset({
+    "doi.org", "dx.doi.org", "arxiv.org", "biorxiv.org", "medrxiv.org", "ecoevorxiv.org", "nature.com",
+    "science.org", "sciencedirect.com", "springer.com", "link.springer.com", "wiley.com",
+    "onlinelibrary.wiley.com", "cell.com", "pnas.org", "plos.org", "journals.plos.org", "elifesciences.org",
+    "royalsocietypublishing.org", "academic.oup.com", "cambridge.org", "frontiersin.org", "mdpi.com",
+    "zenodo.org", "pubmed.ncbi.nlm.nih.gov", "ncbi.nlm.nih.gov", "researchgate.net", "jstage.jst.go.jp",
+    "agupubs.onlinelibrary.wiley.com", "peerj.com", "besjournals.onlinelibrary.wiley.com",
+})
+_DATA_DOMAINS = frozenset({
+    "gbif.org", "iucnredlist.org", "cites.org", "speciesplus.net", "wahis.woah.org", "movebank.org",
+    "ebird.org", "fred.stlouisfed.org", "ourworldindata.org", "data.worldbank.org", "tradingeconomics.com",
+    "acleddata.com", "reliefweb.int", "obis.org", "worldwildlife.org", "fishbase.se", "fishbase.org",
+    "catalogueoflife.org", "marinespecies.org", "birdlife.org", "datazone.birdlife.org", "inaturalist.org",
+})
+_OFFICIAL_SUFFIXES = (
+    ".gov", ".mil", ".gov.uk", ".gov.au", ".gov.cn", ".gov.in", ".gov.br", ".gov.za", ".gov.tw", ".gov.kr",
+    ".go.jp", ".go.kr", ".go.th", ".go.id", ".go.ke", ".go.tz", ".go.ug", ".gouv.fr", ".gob.mx", ".gob.es",
+    ".gob.ar", ".gob.cl", ".gob.pe", ".gov.sg", ".govt.nz", ".gc.ca", ".europa.eu", ".int", ".un.org",
+)
+_OFFICIAL_DOMAINS = frozenset({
+    "un.org", "imf.org", "worldbank.org", "oecd.org", "wto.org", "bis.org", "boj.or.jp", "ecb.europa.eu",
+    "federalreserve.gov", "who.int", "fao.org", "woah.org", "ipbes.net", "cbd.int", "cites.org",
+})
+_OFFICIAL_HOST_RE = re.compile(
+    r"(?:^|\.)(?:gov|gouv|gob|govt|go|gc|admin|bund|regjeringen)\.[a-z]{2,3}$"
+    r"|(?:^|\.)(?:pref|city|town|vill)\.[a-z\-]+\.(?:lg\.)?jp$|\.lg\.jp$"
+)
+_WIRE_TOKEN_RE = re.compile(r"\b(?:reuters|associated press|ap news|afp)\b", re.IGNORECASE)
+_OFFICIAL_TOKEN_RE = re.compile(
+    r"\b(?:ministry|department|agency|commission|press office|united nations|imf|world bank|bank of japan|"
+    r"official (?:site|schedule|calendar)|government|parliament|congress|sec filing|sec 8-k)\b",
+    re.IGNORECASE,
+)
+_ANALYSIS_TOKEN_RE = re.compile(
+    r"\b(?:csis|cfr|rusi|iiss|brookings|atlantic council|think tank|institute)\b", re.IGNORECASE
+)
+_COMMUNITY_TOKEN_RE = re.compile(r"\b(?:hacker news|reddit|twitter|github)\b", re.IGNORECASE)
+_PAYWALLED_TOKEN_RE = re.compile(
+    r"\b(?:wsj|wall street journal|financial times|the economist|bloomberg)\b", re.IGNORECASE
+)
+_URL_IN_ENTRY_RE = re.compile(r"https?://[^\s)>\]]+")
+
+
+def registrable_domain(url: str) -> str:
+    host = re.sub(r"^https?://", "", url.strip(), flags=re.IGNORECASE).split("/", 1)[0].split("?", 1)[0]
+    host = host.split("@")[-1].split(":", 1)[0].lower().removeprefix("www.")
+    return host
+
+
+def _domain_matches(host: str, domains: frozenset[str]) -> bool:
+    return any(host == domain or host.endswith("." + domain) for domain in domains)
+
+
+def classify_source_url(url: str) -> set[str]:
+    host = registrable_domain(url)
+    if not host:
+        return set()
+    classes: set[str] = set()
+    if _domain_matches(host, _WIRE_DOMAINS):
+        classes.add("wire")
+    if _domain_matches(host, _PAYWALLED_DOMAINS):
+        classes.add("paywalled")
+    if _domain_matches(host, _COMMUNITY_DOMAINS):
+        classes.add("community")
+    if _domain_matches(host, _ANALYSIS_DOMAINS):
+        classes.add("analysis")
+    if _domain_matches(host, _RESEARCH_DOMAINS) or (
+        "analysis" not in classes and (host.endswith(".edu") or ".ac." in host or host.endswith(".edu.au"))
+    ):
+        classes.add("research")
+    if _domain_matches(host, _DATA_DOMAINS):
+        classes.add("data")
+    if (
+        host.endswith(_OFFICIAL_SUFFIXES)
+        or _domain_matches(host, _OFFICIAL_DOMAINS)
+        or _OFFICIAL_HOST_RE.search(host)
+    ):
+        classes.add("official")
+    return classes
+
+
 def classify_sources(entries: list[str]) -> list[str]:
     classes: set[str] = set()
     for entry in entries:
-        lower = entry.lower()
-        matched = False
-        if any(token in lower for token in WIRE_TOKENS):
-            classes.add("wire")
-            matched = True
-        if any(token in lower for token in OFFICIAL_TOKENS):
-            classes.add("official")
-            matched = True
-        if any(token in lower for token in ANALYSIS_TOKENS):
-            classes.add("analysis")
-            matched = True
-        if any(token in lower for token in COMMUNITY_TOKENS):
-            classes.add("community")
-            matched = True
-        if any(token in lower for token in PAYWALLED_TOKENS):
-            classes.add("paywalled")
-            matched = True
-        if not matched:
-            classes.add("reporting")
+        entry_classes: set[str] = set()
+        for url in _URL_IN_ENTRY_RE.findall(entry):
+            entry_classes |= classify_source_url(url)
+        if not entry_classes:
+            if _WIRE_TOKEN_RE.search(entry):
+                entry_classes.add("wire")
+            if _OFFICIAL_TOKEN_RE.search(entry):
+                entry_classes.add("official")
+            if _ANALYSIS_TOKEN_RE.search(entry):
+                entry_classes.add("analysis")
+            if _COMMUNITY_TOKEN_RE.search(entry):
+                entry_classes.add("community")
+            if _PAYWALLED_TOKEN_RE.search(entry):
+                entry_classes.add("paywalled")
+        classes |= entry_classes or {"reporting"}
     return sorted(classes)
 
 
+_DEFAULT_TECHNICAL_KEYWORDS = (
+    "inference", "benchmark", "interconnect", "export control", "yield",
+    "grid", "latency", "supply chain", "wafer", "throughput",
+)
+
+
 def score_technical_substance(section: str, text: str) -> int:
-    lower = text.lower()
-    if section not in {"part2", "part3"}:
+    if section not in EDITION.technical_sections:
         return 12
-    keywords = (
-        "inference",
-        "benchmark",
-        "interconnect",
-        "export control",
-        "yield",
-        "grid",
-        "latency",
-        "supply chain",
-        "wafer",
-        "throughput",
-    )
+    lower = text.lower()
+    keywords = EDITION.technical_keywords or _DEFAULT_TECHNICAL_KEYWORDS
     hits = sum(1 for term in keywords if term in lower)
     return min(20, 8 + hits * 2)
 
@@ -1546,8 +1855,14 @@ def score_story(
     watch_entries: int,
     technical_substance_score: int,
     novelty_score: int,
+    unique_domains: int = 0,
+    primary_documents: int = 0,
 ) -> dict:
-    significance = min(20, max(6, word_count // 120))
+    # ``word_count`` is accepted for compatibility but deliberately NOT rewarded: the old
+    # ``word_count // 120`` term scored a 2,400-word article 13 points above an identical
+    # 900-word one, so selection favoured padding. Significance now reflects how many
+    # independent outlets and primary documents back the story.
+    significance = min(20, 6 + 2 * min(6, unique_domains) + 2 * min(2, primary_documents))
     source_depth = min(20, source_count * 2 + len(source_classes) * 2)
     counterpoint = min(20, 6 + counterpoint_rows * 4) if section in COUNTERPOINT_REQUIRED_SECTIONS else 16
     next_48h = min(20, 6 + watch_entries * 4) if section in WATCH_REQUIRED_SECTIONS else 16

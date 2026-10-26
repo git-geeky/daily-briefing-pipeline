@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import shutil
 import time
 from datetime import datetime
 from pathlib import Path
 from xml.sax.saxutils import escape
 
 from briefing_manifest import (
+    EDITION,
     HIGH_CONFIDENCE_IMAGE_THRESHOLD,
+    IMAGE_LICENSE_RE,
     IMAGE_RE,
+    STORY_MARKER_LINE_RE,
     extract_top_level_title,
     generate_all_manifests,
     load_source_audit,
@@ -29,7 +34,8 @@ from run_reporting import ensure_run_attempt, set_step_timing, update_run_report
 from research_vault import build_daily_research_artifacts
 
 
-SECTION_TOC_ORDER = ("part1", "part2", "part3", "part4", "humaninterest", "updates")
+SECTION_TOC_ORDER = tuple(EDITION.toc_sections)
+CLOSING_SECTION = EDITION.closing_section or "closing"
 IMAGE_QUALITY_FAILURE_MARKER = (
     "> **Image Quality Failure:** No trustworthy image validated for this briefing; "
     "no decorative fallback image was embedded."
@@ -83,10 +89,10 @@ def sync_header_table_of_contents(header_text: str, manifests: dict[str, dict]) 
             toc_lines.append(f"{index}. {title}")
         toc_lines.append("")
 
-    closing_manifest = manifests.get("closing") or {}
+    closing_manifest = manifests.get(CLOSING_SECTION) or {}
     closing_titles = [item["title"] for item in closing_manifest.get("items", []) if not item.get("quality_failure")]
     if closing_titles:
-        closing_title = normalize_section_title("closing", closing_manifest.get("section_title")) or "CLOSING ANALYSIS"
+        closing_title = normalize_section_title(CLOSING_SECTION, closing_manifest.get("section_title")) or "CLOSING ANALYSIS"
         toc_lines.append(f"**{closing_title}**")
         toc_lines.append(f"- {closing_titles[0]}")
 
@@ -152,6 +158,77 @@ def enforce_single_inline_image(fragment_texts: dict[str, str], selected_url: st
     return pruned
 
 
+IMAGE_QUALITY_FAILURE_ARTICLE_MARKER = (
+    "> **Image Quality Failure:** No licensed, validated photograph was available for this article; "
+    "no decorative fallback was embedded."
+)
+
+
+def enforce_per_article_images(fragment_texts: dict[str, str], manifests: dict[str, dict]) -> tuple[dict[str, str], dict]:
+    """Per-article photo policy (animal edition): keep validated, licensed images only.
+
+    For every article keep at most ``per_article_max`` images that are high-confidence,
+    non-placeholder, and (when the edition requires it) carry a licence/credit token in the
+    caption, within ``max_total`` overall. Articles left short of ``per_article_min`` get a
+    visible marker instead of a decorative fallback.
+    """
+    policy = EDITION.images
+    per_max = int(policy.get("per_article_max", 2) or 2)
+    per_min = int(policy.get("per_article_min", 0) or 0)
+    max_total = int(policy.get("max_total", 0) or 0)
+    need_license = bool(policy.get("require_license_line"))
+    kept_total = 0
+    report: dict = {"kept": 0, "dropped": 0, "articles_without_image": []}
+    result: dict[str, str] = {}
+    for section, text in fragment_texts.items():
+        manifest_items = ((manifests.get(section) or {}).get("items")) or []
+        entries = split_items(text)
+        if section == "header" or not entries:
+            result[section] = text
+            continue
+        section_title = extract_top_level_title(text)
+        blocks: list[str] = []
+        for index, (heading, body) in enumerate(entries):
+            item = manifest_items[index] if index < len(manifest_items) else {}
+            allowed: list[str] = []
+            for image in item.get("image_candidates") or []:
+                if len(allowed) >= per_max or (max_total and kept_total + len(allowed) >= max_total):
+                    break
+                url = str(image.get("url") or "").strip()
+                if (
+                    url
+                    and url not in allowed
+                    and float(image.get("confidence") or 0.0) >= HIGH_CONFIDENCE_IMAGE_THRESHOLD
+                    and not image.get("placeholder")
+                    and image.get("kind") != "weak"
+                    and (not need_license or IMAGE_LICENSE_RE.search(image.get("alt") or ""))
+                ):
+                    allowed.append(url)
+
+            def keep(match, allowed=allowed):
+                if match.group(2).strip() in allowed:
+                    report["kept"] += 1
+                    return match.group(0)
+                report["dropped"] += 1
+                return ""
+
+            body = IMAGE_RE.sub(keep, body)
+            kept_total += len(allowed)
+            if per_min and len(allowed) < per_min and not item.get("quality_failure"):
+                body = f"{IMAGE_QUALITY_FAILURE_ARTICLE_MARKER}\n\n{body}".strip()
+                report["articles_without_image"].append(heading)
+            block = f"## {heading}".rstrip()
+            if body.strip():
+                block = f"{block}\n\n{re.sub(chr(10) + '{3,}', chr(10) * 2, body.strip())}"
+            blocks.append(block)
+        head = f"# {section_title}\n\n" if section_title else ""
+        result[section] = head + "\n\n".join(blocks).rstrip() + "\n"
+    return result, report
+
+
+CARRY_OVER_POOL_KEYS = ("no_update_decisions", "slate", "selection_notes", "discovery_notes")
+
+
 def write_candidate_pool(date: str, candidate_pool: dict) -> Path | None:
     import briefing_paths as briefing_paths_module
 
@@ -160,8 +237,26 @@ def write_candidate_pool(date: str, candidate_pool: dict) -> Path | None:
         return None
     path = Path(helper(date))
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        # Keep decisions written by earlier pipeline stages (slate, no-update decisions, notes)
+        # that assembly itself does not recompute, so re-assembly never erases them.
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            previous = {}
+        if isinstance(previous, dict):
+            for key in CARRY_OVER_POOL_KEYS:
+                if key in previous and key not in candidate_pool:
+                    candidate_pool[key] = previous[key]
     path.write_text(json.dumps(candidate_pool, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return path
+
+
+def backup_fragment_once(fragment: Path) -> None:
+    """Assembly rewrites fragments in place; keep the first pristine copy next to each."""
+    backup = fragment.with_name(fragment.name + ".pre-assembly")
+    if not backup.exists():
+        shutil.copy2(fragment, backup)
 
 
 def assemble(date: str):
@@ -178,7 +273,7 @@ def assemble(date: str):
             missing.append(fragment)
             continue
         text = fragment.read_text(encoding="utf-8").rstrip()
-        if part == "closing":
+        if part == CLOSING_SECTION:
             text = normalize_closing_fragment(text)
         fragment_texts[part] = text
         fragments.append(text)
@@ -211,18 +306,33 @@ def assemble(date: str):
         }
         candidate_pool["accepted"].extend(selection["accepted"])
         candidate_pool["rejected"].extend(selection["rejected"])
+        original_items = initial_manifests[section]["items"]
+        if original_items and not selection["accepted_indices"] and any(
+            not item.get("quality_failure") for item in original_items
+        ):
+            # Selection would truncate the section to its heading. Never destroy drafted work:
+            # keep the originals and let validation report the real problem.
+            candidate_pool["sections"][section]["selection_error"] = (
+                "selection accepted no candidates; original items preserved for validation"
+            )
+            continue
         fragment_texts[section] = rebuild_section_text(section, fragment_texts[section], selection["accepted_indices"]).rstrip()
 
     pruned_manifests = generate_all_manifests(date, fragment_texts=fragment_texts, write=False)
     if "header" in fragment_texts:
         fragment_texts["header"] = sync_header_table_of_contents(fragment_texts["header"], pruned_manifests).rstrip()
-    selected_image_url = select_single_valid_image_url(pruned_manifests)
-    fragment_texts = enforce_single_inline_image(fragment_texts, selected_image_url)
+    if EDITION.image_mode == "per_article":
+        fragment_texts, image_report = enforce_per_article_images(fragment_texts, pruned_manifests)
+        candidate_pool["image_enforcement"] = image_report
+    else:
+        selected_image_url = select_single_valid_image_url(pruned_manifests)
+        fragment_texts = enforce_single_inline_image(fragment_texts, selected_image_url)
 
     for part in SECTIONS:
         fragment = fragment_path(part, date)
         normalized = fragment_texts[part].rstrip() + "\n"
         if fragment.read_text(encoding="utf-8") != normalized:
+            backup_fragment_once(fragment)
             fragment.write_text(normalized, encoding="utf-8")
 
     final_manifests = generate_all_manifests(date, fragment_texts=fragment_texts, write=True)
@@ -235,7 +345,11 @@ def assemble(date: str):
         candidate_pool=candidate_pool,
     )
     output = assembled_markdown_path(date)
-    ordered_fragments = [fragment_texts[part].rstrip() for part in SECTIONS if part in fragment_texts]
+    # Story markers stay in the fragments (they carry story identity into the manifests that
+    # tomorrow's run reads) but never reach the reader-facing markdown/PDF.
+    ordered_fragments = [
+        STORY_MARKER_LINE_RE.sub("", fragment_texts[part]).rstrip() for part in SECTIONS if part in fragment_texts
+    ]
     output.write_text("\n\n".join(ordered_fragments) + "\n", encoding="utf-8")
     ended = time.time()
     final_summary = json.loads(assembled_manifest_path(date).read_text(encoding="utf-8")).get("summary") or {}

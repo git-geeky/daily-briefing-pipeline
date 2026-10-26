@@ -1,0 +1,182 @@
+{
+  "edition_id": "daily",
+  "label": "The Daily Intelligence Briefing",
+  "description": "Long-form same-day world, AI, tech, Japan, human-interest and updates briefing (JST).",
+  "sections": [
+    "part1",
+    "part2",
+    "part3",
+    "part4",
+    "humaninterest",
+    "updates",
+    "closing"
+  ],
+  "section_titles": {
+    "part1": "PART I - GENERAL NEWS",
+    "part2": "PART II - AI NEWS",
+    "part3": "PART III - NON-AI TECH NEWS",
+    "part4": "PART IV - JAPAN NEWS",
+    "humaninterest": "PART V - HUMAN INTEREST",
+    "updates": "PART VI - UPDATES",
+    "closing": "CLOSING ANALYSIS"
+  },
+  "section_rules": {
+    "part1": {
+      "min_count": 4,
+      "target_count": 5,
+      "max_count": 6,
+      "min_words": 1500,
+      "soft_min_words": 900,
+      "hard_floor": 700,
+      "min_sources": 5,
+      "min_source_classes": 3,
+      "min_section_sources": 2,
+      "image_floor": 1,
+      "score_floor": 62,
+      "expansion_score_floor": 78
+    },
+    "part2": {
+      "min_count": 6,
+      "target_count": 8,
+      "max_count": 9,
+      "min_words": 1500,
+      "soft_min_words": 900,
+      "hard_floor": 700,
+      "min_sources": 5,
+      "min_source_classes": 3,
+      "min_section_sources": 2,
+      "image_floor": 1,
+      "score_floor": 64,
+      "expansion_score_floor": 80
+    },
+    "part3": {
+      "min_count": 2,
+      "target_count": 3,
+      "max_count": 4,
+      "min_words": 1500,
+      "soft_min_words": 900,
+      "hard_floor": 700,
+      "min_sources": 5,
+      "min_source_classes": 3,
+      "min_section_sources": 2,
+      "image_floor": 1,
+      "score_floor": 62,
+      "expansion_score_floor": 78
+    },
+    "part4": {
+      "min_count": 2,
+      "target_count": 3,
+      "max_count": 4,
+      "min_words": 1500,
+      "soft_min_words": 900,
+      "hard_floor": 700,
+      "min_sources": 5,
+      "min_source_classes": 3,
+      "min_section_sources": 2,
+      "image_floor": 1,
+      "score_floor": 64,
+      "expansion_score_floor": 80,
+      "reader_value_required": true
+    },
+    "humaninterest": {
+      "min_count": 1,
+      "target_count": 1,
+      "max_count": 3,
+      "min_words": 1200,
+      "soft_min_words": 700,
+      "hard_floor": 500,
+      "min_sources": 4,
+      "min_source_classes": 2,
+      "score_floor": 58,
+      "expansion_score_floor": 72
+    },
+    "updates": {
+      "min_count": 0,
+      "target_count": 1,
+      "max_count": 3,
+      "min_words": 800,
+      "soft_min_words": 500,
+      "hard_floor": 400,
+      "min_sources": 3,
+      "min_source_classes": 2,
+      "score_floor": 56,
+      "expansion_score_floor": 70,
+      "reader_value_required": true
+    },
+    "closing": {
+      "min_count": 1,
+      "target_count": 1,
+      "max_count": 1,
+      "min_words": 1200,
+      "soft_min_words": 700,
+      "hard_floor": 500,
+      "min_sources": 4,
+      "min_source_classes": 2,
+      "score_floor": 58
+    }
+  },
+  "hard_news_sections": [
+    "part1",
+    "part2",
+    "part3",
+    "part4"
+  ],
+  "counterpoint_required_sections": [
+    "part1",
+    "part2",
+    "part3",
+    "part4"
+  ],
+  "watch_required_sections": [
+    "part1",
+    "part2",
+    "part3",
+    "part4"
+  ],
+  "toc_sections": [
+    "part1",
+    "part2",
+    "part3",
+    "part4",
+    "humaninterest",
+    "updates"
+  ],
+  "closing_section": "closing",
+  "header": {
+    "exec_summary_words": [
+      600,
+      800
+    ],
+    "min_cross_references": 3
+  },
+  "images": {
+    "mode": "single",
+    "max_total": 1
+  },
+  "rules": {
+    "focus_beat_required": true,
+    "hn_target": 5,
+    "min_assembled_bytes": 102400,
+    "native_language_audit": true
+  },
+  "banned_topic_labels": null,
+  "technical_keywords": [
+    "inference",
+    "benchmark",
+    "interconnect",
+    "export control",
+    "yield",
+    "grid",
+    "latency",
+    "supply chain",
+    "wafer",
+    "throughput"
+  ],
+  "technical_sections": [
+    "part2",
+    "part3"
+  ],
+  "catalogs": [
+    "sources.md"
+  ]
+}

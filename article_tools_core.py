@@ -266,9 +266,16 @@ def compose_section(section_title: str, articles: list[str]) -> str:
 # --------------------------------------------------------------------------------------------
 # Email body
 # --------------------------------------------------------------------------------------------
+def _plain(text: str) -> str:
+    """Emails show text, not markdown: drop emphasis marks (``*Salmo salar*``, ``**bold**``) and backticks."""
+    return re.sub(r"[*`]+", "", text or "")
+
+
 def compose_email_bodies(*, label: str, date_human: str, summaries: list[dict[str, Any]], notes: list[str] | None = None,
                          digest_titles: list[str] | None = None) -> tuple[str, str]:
     notes = notes or []
+    summaries = [{**s, "title": _plain(s["title"]), "bottom_line": _plain(s["bottom_line"]), "confidence": _plain(s["confidence"])} for s in summaries]
+    digest_titles = [_plain(t) for t in digest_titles] if digest_titles else digest_titles
     text = [f"{label} — {date_human}", "", f"{len(summaries)} stories in depth (full text and photographs in the attached PDF):", ""]
     for i, s in enumerate(summaries, start=1):
         text.append(f"{i}. {s['title']}")

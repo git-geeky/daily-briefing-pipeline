@@ -153,6 +153,17 @@ print(json.dumps(result))
 '''
 
 
+class EmailBodyTests(unittest.TestCase):
+    def test_markdown_emphasis_marks_do_not_reach_the_email(self) -> None:
+        summaries = [{"title": "Trout in *Salmo trutta* streams", "bottom_line": "A **clear** result in *Salmo salar*.", "confidence": "Medium",
+                      "group": "fish_marine", "region": "Norway", "taxa": "", "part": ""}]
+        text, html_body = tools.compose_email_bodies(label="L", date_human="D", summaries=summaries, digest_titles=["Item on *Mola mola*"])
+        for body in (text, html_body):
+            self.assertNotIn("*", body)
+        self.assertIn("Salmo salar", text)
+        self.assertIn("Mola mola", text)
+
+
 class DeterministicHeaderSizeTests(unittest.TestCase):
     """Live-run finding: the fallback header was ~1,100 words for twenty stories (limit 600-800), so a failed model header meant no briefing."""
 

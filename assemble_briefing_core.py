@@ -214,7 +214,8 @@ def enforce_per_article_images(fragment_texts: dict[str, str], manifests: dict[s
 
             body = IMAGE_RE.sub(keep, body)
             kept_total += len(allowed)
-            if per_min and len(allowed) < per_min and not item.get("quality_failure"):
+            section_needs_photo = bool(EDITION.rule(section).get("image_floor"))
+            if per_min and section_needs_photo and len(allowed) < per_min and not item.get("quality_failure"):
                 body = f"{IMAGE_QUALITY_FAILURE_ARTICLE_MARKER}\n\n{body}".strip()
                 report["articles_without_image"].append(heading)
             block = f"## {heading}".rstrip()

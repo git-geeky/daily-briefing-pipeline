@@ -173,8 +173,7 @@
     },
     "budget": {
       "max_cost_usd_per_run": 40.0,
-      "max_cost_usd_per_article": 4.0,
-      "max_cost_usd_per_day": 60.0
+      "max_cost_usd_per_article": 4.0
     },
     "delivery": {
       "subject_template": "The Animal Science Briefing - {human_date}",

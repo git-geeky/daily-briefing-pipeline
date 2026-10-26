@@ -809,11 +809,17 @@ def is_blockquote_line(line: str) -> bool:
     return re.match(r'^\s*>\s?', line) is not None
 
 
+def is_main_title(text: str) -> bool:
+    """The document's H1 title: the daily briefing's name or whatever label the active edition uses."""
+    upper = text.upper()
+    return "DAILY INTELLIGENCE" in upper or BRIEFING_LABEL.upper() in upper
+
+
 def is_part_header(level: int, text: str) -> bool:
     upper = text.upper()
     return (
         level == 1
-        and "DAILY INTELLIGENCE" not in upper
+        and not is_main_title(text)
         and "EXECUTIVE SUMMARY" not in upper
     )
 
@@ -917,7 +923,7 @@ def skip_blank_lines(lines, index: int) -> int:
 def make_heading_flowable(level: int, text: str, styles):
     text = md_inline(text)
     if level == 1:
-        if "DAILY INTELLIGENCE" in text.upper():
+        if is_main_title(text):
             return Paragraph(text, styles["MainTitle"])
         if "EXECUTIVE SUMMARY" in text.upper():
             return KeepTogether([Spacer(1, 8), Paragraph(text, styles["PartHeader"])])

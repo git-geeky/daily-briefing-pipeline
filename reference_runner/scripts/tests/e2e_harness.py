@@ -1,0 +1,178 @@
+"""Subprocess harness: run the real conductor against a scripted fake model (no network, no real LLM).
+
+Usage: python e2e_harness.py <scenario> <root> [--second-pass]
+Prints one JSON line: {"exit": int, "calls": {...}, "files": {...}, "state": {...}} for the test to assert on.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+SCRIPTS = HERE.parent
+REPO = HERE.parents[2]
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(SCRIPTS))
+
+scenario, root = sys.argv[1], Path(sys.argv[2])
+second_pass = "--second-pass" in sys.argv
+os.environ.update({"BRIEFING_EDITION": "animal", "DAILY_BRIEFING_ROOT": str(root), "DAILY_BRIEFING_SHARED_ROOT": str(REPO)})
+DATE = "2026-10-26"
+
+import animal_fixtures as fx  # noqa: E402
+import conductor_core as cc  # noqa: E402
+import edition_core  # noqa: E402
+import llm_backend_core as llm  # noqa: E402
+import slate_core  # noqa: E402
+from test_photo_core import FakeFetcher, commons_page  # noqa: E402
+
+edition = edition_core.load_edition("animal")
+catalog = fx.catalog_urls(4)
+WORDS = int(os.environ.get("E2E_WORDS", "1700"))
+
+audit_fixture = root / "audit-fixture.json"
+import source_audit_core as audit  # noqa: E402
+
+entries = audit.parse_source_catalogs()
+animal = [e for e in entries if e.catalog_number >= 401][:6]
+audit_fixture.write_text(json.dumps({
+    "default_status": "checked_no_relevant_update",
+    "sources": [{"source_id": e.source_id, "items": [
+        {"title": f"Telemetry study of survival in a monitored animal population reported by {e.name[:30]}", "url": f"https://example.org/{i}-{k}", "published": "2026-10-25"}
+        for k in range(2)]} for i, e in enumerate(animal)],
+}), encoding="utf-8")
+
+calls: dict[str, int] = {}
+prompts: dict[str, list[str]] = {}
+state_flags = {"article_calls": 0}
+LIMIT_AFTER = int(os.environ.get("E2E_LIMIT_AFTER", "5"))
+
+
+def story_of(prompt: str) -> dict:
+    sid = re.search(r'"story_id": "([^"]+)"', prompt).group(1)
+    title = re.search(r'"title": "([^"]+)"', prompt).group(1)
+    return {"story_id": sid, "title": title, "prior_story_id": None}
+
+
+def result_for(text: str, *, corpus: str | None = None, role: str = "x") -> llm.LLMResult:
+    return llm.LLMResult(ok=True, text=text, model_used="fake", cost_usd=0.05, input_tokens=1000, output_tokens=len(text) // 4,
+                         rate_limit=llm.RateLimitInfo(status="allowed", five_hour_utilization=0.2, seven_day_utilization=0.1),
+                         tool_corpus=[corpus if corpus is not None else text])
+
+
+def script(request: llm.LLMRequest):
+    stage = request.stage
+    calls[stage] = calls.get(stage, 0) + 1
+    prompts.setdefault(stage, []).append(request.prompt)
+    if stage == "probe":
+        if scenario == "org_limit":
+            return llm.LLMResult(ok=False, error_kind="org_limit", error_detail="You've hit your org's monthly usage limit")
+        return result_for("ok")
+    if stage == "slate":
+        return result_for(json.dumps(fx.make_slate_json(13)))
+    if stage in {"article", "repair"}:
+        if stage == "article":
+            state_flags["article_calls"] += 1
+            if scenario in {"limit_midway", "limit_partial"} and not second_pass and state_flags["article_calls"] > LIMIT_AFTER:
+                return llm.LLMResult(ok=False, error_kind="usage_limit", error_detail="You've hit your session limit · resets 4:30pm (Asia/Tokyo)",
+                                     reset_hint=datetime(2026, 10, 26, 7, 30, tzinfo=timezone.utc).timestamp())
+        story = story_of(request.prompt) if stage == "article" else {
+            "story_id": re.search(r"<!-- story: ([a-z0-9-]+)", request.prompt).group(1),
+            "title": re.search(r"(?m)^## (.+)$", request.prompt.split("# Current article")[1]).group(1), "prior_story_id": None}
+        sid = story["story_id"]
+        if scenario == "skip_story" and stage == "article" and sid == "fixture-story-3":
+            return result_for("SKIP: material_limited (only a press release exists)")
+        clean = fx.make_article(story, words=WORDS, source_lines=fx.default_sources(catalog))
+        if scenario == "messy_writer" and stage == "article" and sid == "fixture-story-2":
+            return result_for(fx.make_article(story, words=WORDS, source_lines=fx.default_sources(catalog), messy=True), corpus=clean)
+        if scenario == "missing_block" and stage == "article" and sid == "fixture-story-2":
+            return result_for(clean.replace("### Counterpoint Matrix", "### Misc"), corpus=clean)
+        if scenario == "invented_quote" and stage == "article" and sid == "fixture-story-2":
+            quoted = clean.replace("### Implications\n", '### Implications\n\nOne author told reporters, "this exact sentence was never published in any source anywhere".\n')
+            return result_for(quoted, corpus=clean)
+        return result_for(clean, corpus=clean)
+    if stage == "header":
+        titles = re.findall(r'"title": "([^"]+)"', request.prompt)
+        if scenario == "header_garbage":
+            return result_for("I could not do this.")
+        body = " ".join(f"Sentence {i} about the telemetry findings and what they mean for management." for i in range(45))
+        refs = "\n".join(f'- Both stories turn on telemetry. Cross-reference: "{t}"' for t in titles[:2])
+        return result_for(f"## Executive Summary\n\n{body}\n\n### Cross-currents\n\n{refs}\n")
+    if stage == "digest":
+        ids = re.findall(r'"story_id": "([^"]+)"', request.prompt)[:3]
+        items = []
+        for sid in ids:
+            items.append(f"## Digest item for {sid} describing a smaller finding\n<!-- story: {sid} -->\n\n**Bottom line:** A modest but real result.\n\n"
+                         + " ".join(["The survey recorded a measurable change in occupancy across 24 sites over two seasons."] * 14)
+                         + f"\n\n### Primary Sources\n\n- First source {catalog[0]}\n- Second source {catalog[1]}\n")
+        return result_for("\n\n".join(items))
+    if stage == "review":
+        return result_for("[]")
+    raise AssertionError(f"unexpected stage {stage}")
+
+
+deliver_log = root / "deliver-args.json"
+deliver_script = root / "fake_deliver.py"
+deliver_script.write_text(
+    "import json, sys\nfrom pathlib import Path\nPath(sys.argv[1]).write_text(json.dumps(sys.argv[2:]))\nprint('PDF SHA256: x')\nprint('Email sent')\n", encoding="utf-8")
+os.environ["BRIEFING_DELIVER_COMMAND"] = json.dumps([sys.executable, str(deliver_script), str(deliver_log), "--pdf", "{pdf}", "--date", "{date}",
+                                                     "--edition", "{edition}", "--body-text-file", "{body_text}", "--body-html-file", "{body_html}",
+                                                     "--subject", "{subject}", "--recipient", "{recipients}"])
+os.environ["ANIMAL_BRIEFING_RECIPIENTS"] = "a@example.com,b@example.com"
+
+now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)  # 05:00 JST on the briefing date
+if scenario == "past_deadline":
+    now = datetime(2026, 10, 26, 5, 0, tzinfo=timezone.utc)  # 14:00 JST, after the 11:30 deadline
+
+fetch_counter = {"n": 0}
+
+
+class UniqueCommons(FakeFetcher):
+    def get_json(self, url, params=None):
+        if "wikimedia" in url:
+            fetch_counter["n"] += 1
+            self.commons = [commons_page(f"Photo {fetch_counter['n']}-{i}.jpg", description="Example species Genus species in its habitat") for i in range(12)]
+        return super().get_json(url, params)
+
+
+settings = {"models": {"review": {"model": "opus", "effort": "low", "optional": True}}}
+conductor = cc.Conductor(
+    edition=edition, date=DATE, scripts_dir=SCRIPTS, backend=llm.FakeBackend(script), photo_fetcher=UniqueCommons(),
+    check_network=False, audit_fixture=audit_fixture, now=lambda: now, sleep=lambda s: None, settings_override=settings,
+)
+code = conductor.run(finish_only="--finish" in sys.argv)
+
+gen = Path(conductor.generated_dir)
+arch = Path(conductor.archive_dir)
+stem = conductor.ctx.profile.artifact_stem
+out = {
+    "exit": code, "calls": calls,
+    "articles_done": sorted(p.stem for p in conductor.articles_dir.glob("*.md") if not p.stem.endswith(".raw")),
+    "pdf_exists": (gen / f"{stem}-{DATE}.pdf").exists(),
+    "assembled_exists": (arch / f"{stem}-{DATE}.md").exists(),
+    "alerts": sorted(p.name for p in (gen / "alerts").glob("*")) if (gen / "alerts").exists() else [],
+    "delivered": bool(conductor.state.state.get("delivered")),
+    "deliver_args": json.loads(deliver_log.read_text()) if deliver_log.exists() else None,
+    "stages": {k: v.get("status") for k, v in conductor.state.state["stages"].items() if not k.startswith("article:")},
+    "notes": conductor.state.state.get("delivery_notes"),
+    "spent": conductor.state.state.get("spent_usd"),
+    "events": [e["message"] for e in conductor.state.state["events"]][-25:],
+    "repair_prompts": [p.split("# What failed")[1].split("# Instructions")[0] for p in prompts.get("repair", [])],
+    "header_source": conductor.state.state["stages"].get("header", {}).get("source"),
+}
+pdf = gen / f"{stem}-{DATE}.pdf"
+if pdf.exists():
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(pdf))
+    out["pdf_page1"] = reader.pages[0].extract_text()[:400]
+    out["pdf_pages"] = len(reader.pages)
+    out["pdf_images"] = sum(len(page.images) for page in reader.pages)
+assembled = arch / f"{stem}-{DATE}.md"
+out["assembled_text"] = assembled.read_text(encoding="utf-8")[:200000] if assembled.exists() else ""
+print("E2E_RESULT " + json.dumps(out))

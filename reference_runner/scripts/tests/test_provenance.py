@@ -100,6 +100,45 @@ class QuoteRegressionTests(unittest.TestCase):
         self.assertEqual(len(report.unmatched_quotes), 1)
 
 
+class QuotePairingTests(unittest.TestCase):
+    """Live-run finding: a short quoted phrase handed its closing quote to the next quotation, so the prose between two
+    quotations was reported as an invented quotation and good articles were failed."""
+
+    def test_a_short_quoted_phrase_does_not_turn_the_prose_after_it_into_a_quotation(self) -> None:
+        article = ('## T\nThe headline "65 million years" is not the paper\'s wording (doi:10.1038/s41586-026-11007-3), and the press release dated '
+                   '23 September describes a team of 137 researchers; the lead author said "the genome-scale tree places the origin in Europe" in Berlin.\n')
+        verbatim, translated = prov.classify_quotes(article)
+        self.assertEqual(verbatim, ["the genome-scale tree places the origin in Europe"])
+        self.assertEqual(translated, [])
+
+    def test_curly_and_straight_quotes_each_pair_with_their_own_kind(self) -> None:
+        article = '## T\nHe wrote “the population declined sharply after the second winter” and later said "the recovery plan has not been funded at all".\n'
+        verbatim, _ = prov.classify_quotes(article)
+        self.assertEqual(len(verbatim), 2)
+
+    def test_an_unpaired_straight_quote_is_ignored_and_quotes_never_pair_across_paragraphs(self) -> None:
+        article = '## T\nThe mesh was 5" wide and nothing more was said about it in the long methods section here.\n\nA later paragraph says "the actual quotation sits entirely inside this one paragraph".\n'
+        verbatim, _ = prov.classify_quotes(article)
+        self.assertEqual(verbatim, ["the actual quotation sits entirely inside this one paragraph"])
+
+
+class EuropeanNumberTests(unittest.TestCase):
+    def test_dutch_thousands_separators_match_the_english_form_in_the_article(self) -> None:
+        report = prov.check_article("## T\nMore than 200,000 volunteers contribute records each year across the continent.\n",
+                                    ["Meer dan 200.000 vrijwilligers leveren elk jaar waarnemingen aan."], check_network=False)
+        self.assertEqual(report.unmatched_numbers, [])
+
+    def test_decimal_comma_and_space_separated_thousands_match(self) -> None:
+        corpus = ["De groei bedroeg 3,4 procent en het bestand telt 12 500 dieren, aldus het rapport."]
+        report = prov.check_article("## T\nGrowth was 3.4 percent and the stock numbers 12,500 animals in the latest count.\n", corpus, check_network=False)
+        self.assertEqual(report.unmatched_numbers, [])
+
+    def test_a_wrong_number_is_still_flagged(self) -> None:
+        report = prov.check_article("## T\nMore than 300,000 volunteers contribute records each year across the continent.\n",
+                                    ["Meer dan 200.000 vrijwilligers leveren elk jaar waarnemingen aan."], check_network=False)
+        self.assertEqual([n["text"] for n in report.unmatched_numbers], ["300,000"])
+
+
 class TranslatedQuoteTests(unittest.TestCase):
     """Native-language sources are quoted in the writer's translation, which cannot match the fetched original verbatim."""
 

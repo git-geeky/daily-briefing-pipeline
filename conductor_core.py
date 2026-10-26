@@ -60,7 +60,7 @@ def resolve_timezone(name: str):
     return timezone(timedelta(hours=_FIXED_OFFSET_HOURS.get(name, 0)), name=name)
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "slate_candidates": 14, "digest_items": 6, "max_parallel_articles": 2,
+    "slate_candidates": 14, "slate_reserves": 4, "digest_items": 6, "max_parallel_articles": 2,
     "article_sections": None, "article_section": None, "digest_section": None, "article_min_total": None,
     "section_briefs": {},
     "timezone": "Asia/Tokyo", "deadline_local": "11:30",
@@ -82,7 +82,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "lock_stale_minutes": 240, "fallback_on_refusal": "opus", "enabled": True, "wait_for_reset_minutes": 90,
     # Script-first: what an HTTP client can fetch is fetched before the writer starts (dossier_core), and names and IUCN
     # categories are checked against GBIF after drafting (taxonomy_core). Both need network access and cost no subscription usage.
-    "dossier": {"enabled": True, "max_sources": 6, "per_source_chars": 9000, "total_chars": 36000, "max_papers": 4,
+    "dossier": {"enabled": True, "max_sources": 7, "per_source_chars": 12000, "total_chars": 48000, "max_papers": 4,
                 "repair_chars": 14000, "digest_sources": 2, "digest_chars": 5000},
     "taxonomy_check": True,
 }
@@ -807,6 +807,7 @@ class Conductor:
             values["SPEC"] += f"\n\nNOTE: your previous answer had only {len(report.kept)} usable stories; return at least {self.total_min() + 4}."
         if report is None or len(report.kept) < self.total_min():
             raise StageFailed("slate", f"could not obtain {self.total_min()} valid stories")
+        self._top_up_reserves(report, values, prior, banned, plan, multi)
         if multi:
             selected, backups, notes = slate_core.select_by_sections(report.kept, plan)
         else:
@@ -820,6 +821,41 @@ class Conductor:
             self._record_no_update_decisions(decisions)
         self.state.mark("slate", "done", selected=len(selected), backups=len(backups), dropped=len(report.dropped))
         self.log(f"slate: {len(selected)} selected, {len(backups)} backups, {len(report.dropped)} dropped; {'; '.join(notes) or 'balanced'}")
+
+    def _top_up_reserves(self, report: Any, values: dict[str, Any], prior: list[str], banned: Callable[[str], Any],
+                         plan: dict[str, dict[str, int]], multi: bool) -> None:
+        """A story that fails verification is replaced from the reserves. A live run got ten stories back and no reserve, so four
+        failures meant no briefing; ask once for the missing reserves (never fatal)."""
+        import slate_core
+
+        wanted = self.total_target() + int(self.settings.get("slate_reserves", 4))
+        if len(report.kept) >= wanted or self.past_deadline():
+            return
+        self.log(f"slate: {len(report.kept)} usable stories and {wanted} wanted; asking once for reserves")
+        note = (f"\n\nNOTE: these stories are already chosen. Return ONLY additional stories as a JSON array in the same format, at least "
+                f"{wanted - len(report.kept)} of them, to serve as reserves for stories that fail verification. Thin material is acceptable for "
+                "reserves. Do not repeat or rephrase any of these:\n" + "\n".join(f"- {s['title']}" for s in report.kept))
+        try:
+            result = self.call("slate", self.prompt("slate", {**values, "SPEC": values["SPEC"] + note}), role="slate",
+                               tools=["WebSearch"], label="slate-reserves")
+            if not result.ok:
+                return
+            extra = slate_core.validate_slate(
+                slate_core.extract_json(result.text), prior_titles=prior + [s["title"] for s in report.kept], banned_check=banned,
+                sections=tuple(plan) if multi else (), default_section=None if multi else self.article_section)
+        except (ValueError, Deferred, HumanActionNeeded) as exc:
+            self.log(f"slate reserves unavailable: {exc}")
+            return
+        taken = {s["story_id"] for s in report.kept}
+        added = 0
+        for story in extra.kept:
+            if story["story_id"] in taken:
+                continue
+            story["rank"] = 1000 + int(story.get("rank") or 0)  # reserves rank after every story already chosen
+            report.kept.append(story)
+            taken.add(story["story_id"])
+            added += 1
+        self.log(f"slate: {added} reserve stories added")
 
     def _record_no_update_decisions(self, decisions: list[Any]) -> None:
         """Beats with nothing to report (focus company, a watch-list person) are recorded, not padded; the validator reads them."""
@@ -1151,6 +1187,8 @@ class Conductor:
         else:
             outcome.status = "done"
             atomic_write(self.article_path(sid), article)
+        if outcome.status == "failed":
+            atomic_write(self.articles_dir / f"{sid}.last.md", article)  # what the writer produced, for diagnosis; never shipped
         self._save_article_meta(sid, outcome)
         self.log(f"article {sid}: {outcome.status} ({outcome.words} words, ${outcome.cost_usd:.2f}"
                  f"{', ' + '; '.join(outcome.flags) if outcome.flags else ''})")
@@ -1159,8 +1197,8 @@ class Conductor:
     def _save_article_meta(self, sid: str, outcome: ArticleOutcome) -> None:
         atomic_write(self.article_meta_path(sid), json.dumps(outcome.__dict__, indent=1, ensure_ascii=False) + "\n")
         self.state.mark(f"article:{sid}", outcome.status, words=outcome.words, cost=round(outcome.cost_usd, 3))
-        if outcome.status in {"done", "skipped"} or outcome.terminal:
-            self.draft_path(sid).unlink(missing_ok=True)
+        if outcome.status in {"done", "skipped"}:
+            self.draft_path(sid).unlink(missing_ok=True)  # a terminal failure keeps its draft (and the evidence corpus) for diagnosis
 
     # ---- stage: digest -----------------------------------------------------------------
     def stage_digest(self) -> None:

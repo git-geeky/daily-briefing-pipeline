@@ -83,6 +83,14 @@ def script(request: llm.LLMRequest):
             return llm.LLMResult(ok=False, error_kind="org_limit", error_detail="You've hit your org's monthly usage limit")
         return result_for("ok")
     if stage == "slate":
+        if scenario == "slate_topup":  # the first answer has too few stories for any reserve; the second supplies them
+            if calls["slate"] == 1:
+                return result_for(json.dumps(fx.make_slate_json(11)))
+            topics = ["otter holt abandonment after kelp loss", "lungfish aestivation genes", "wetland owl nest predation", "glacier frog chytrid prevalence"]
+            extras = fx.make_slate_json(15)[11:]
+            for entry, topic in zip(extras, topics):  # titles must differ from the chosen ones or the repeat check rightly drops them
+                entry["title"] = f"Reserve story on {topic} in a monitored population"
+            return result_for(json.dumps(extras))
         return result_for(json.dumps(fx.make_slate_json(13)))
     if stage in {"article", "repair"}:
         if stage == "article":
@@ -202,7 +210,7 @@ if scenario in {"dossier", "dossier_quote", "taxonomy_typo"}:
             "in a public repository with the analysis scripts.</p></article></body></html>")
     web_fetcher = FakeGbifWeb({f"https://example.org/{kind}-{i}": html_bytes(page) for i in range(14) for kind in ("paper", "agency")})
 
-settings = {"review_enabled": True, "models": {"review": {"model": "opus", "effort": "low", "optional": True}}}
+settings = {"slate_reserves": 4 if scenario == "slate_topup" else 3, "review_enabled": True, "models": {"review": {"model": "opus", "effort": "low", "optional": True}}}
 conductor = cc.Conductor(
     edition=edition, date=DATE, scripts_dir=SCRIPTS, backend=llm.FakeBackend(script), photo_fetcher=UniqueCommons(), web_fetcher=web_fetcher,
     check_network=False, audit_fixture=audit_fixture, now=lambda: clock["now"], sleep=lambda s: None, settings_override=settings,
@@ -233,7 +241,7 @@ arch = Path(conductor.archive_dir)
 stem = conductor.ctx.profile.artifact_stem
 out = {
     "exit": code, "calls": calls, "article_story_ids": article_story_ids,
-    "articles_done": sorted(p.stem for p in conductor.articles_dir.glob("*.md") if not p.stem.endswith(".raw")),
+    "articles_done": sorted(p.stem for p in conductor.articles_dir.glob("*.md") if not p.stem.endswith((".raw", ".last"))),
     "pdf_exists": (gen / f"{stem}-{DATE}.pdf").exists(),
     "assembled_exists": (arch / f"{stem}-{DATE}.md").exists(),
     "alerts": sorted(p.name for p in (gen / "alerts").glob("*")) if (gen / "alerts").exists() else [],

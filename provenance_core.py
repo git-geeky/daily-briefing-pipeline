@@ -33,7 +33,7 @@ _NUMBER_RE = re.compile(
     re.I,
 )
 _SCALES = {"thousand": 1e3, "k": 1e3, "million": 1e6, "m": 1e6, "billion": 1e9, "bn": 1e9, "trillion": 1e12}
-_QUOTE_RE = re.compile(r"[\"“]([^\"”]{20,})[\"”]")
+_CURLY_QUOTE_RE = re.compile(r"“([^”]*)”")
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s)\]>\"'|,;]+[^\s)\]>\"'|,;.]")
 _URL_RE = re.compile(r"https?://[^\s)>\]]+")
 _SKIP_SECTIONS = ("primary sources", "watch next", "sources")
@@ -179,8 +179,26 @@ def extract_numeric_claims(markdown: str) -> list[NumberClaim]:
     return claims
 
 
-def corpus_number_set(corpus_text: str) -> set[str]:
+_EU_THOUSANDS_RE = re.compile(r"(?<![\w.,])\d{1,3}(?:[. \u00a0\u202f]\d{3})+(?:,(?P<frac>\d+))?(?![\w])")
+_EU_DECIMAL_RE = re.compile(r"(?<![\w.,])(?P<int>\d{1,3}),(?P<frac>\d{1,2})(?![\d])")
+
+
+def _european_numbers(corpus_text: str) -> set[str]:
+    """Sources in Dutch, German, French, Spanish... write 200.000 and 3,4 where English writes 200,000 and 3.4. Both readings
+    go into the evidence set (it only ever lets a correct figure match; the article's own figures are still read English-style)."""
     numbers: set[str] = set()
+    for match in _EU_THOUSANDS_RE.finditer(corpus_text):
+        digits = re.sub(r"[. \u00a0\u202f]", "", match.group(0).split(",")[0])
+        numbers.add(digits)
+        if match.group("frac"):
+            numbers.add(f"{digits}.{match.group('frac')}")
+    for match in _EU_DECIMAL_RE.finditer(corpus_text):
+        numbers.add(f"{match.group('int')}.{match.group('frac')}")
+    return numbers
+
+
+def corpus_number_set(corpus_text: str) -> set[str]:
+    numbers: set[str] = _european_numbers(corpus_text)
     for match in _NUMBER_RE.finditer(corpus_text):
         numbers.update(_forms(match.group("int"), match.group("frac"), match.group("tail") or ""))
         digits = match.group("int").replace(",", "")
@@ -210,20 +228,34 @@ def _strip_blocks(markdown: str) -> str:
 _TRANSLATION_CUE_RE = re.compile(r"(?i)\btranslat\w*")
 
 
+def _quote_spans(paragraph: str) -> list[tuple[int, int]]:
+    """(start, end) of the text inside each quotation in one paragraph.
+
+    Curly quotes pair themselves. Straight quotes pair in order (1st with 2nd, 3rd with 4th), which matters: a short quoted
+    phrase ("65 million years") must not hand its closing quote to the *next* quotation and turn the prose between them into a
+    phantom quotation. An odd straight quote at the end (5" mesh) is left unpaired."""
+    spans = [(m.start(1), m.end(1)) for m in _CURLY_QUOTE_RE.finditer(paragraph)]
+    inside = [(m.start(), m.end()) for m in _CURLY_QUOTE_RE.finditer(paragraph)]
+    straight = [i for i, ch in enumerate(paragraph) if ch == '"' and not any(a <= i < b for a, b in inside)]
+    for k in range(0, len(straight) - 1, 2):
+        spans.append((straight[k] + 1, straight[k + 1]))
+    return sorted(spans)
+
+
 def classify_quotes(markdown: str) -> tuple[list[str], list[str]]:
     """Split quotations into (verbatim, translated). A quotation that the writer marks as a translation (the spec asks for
     native-language sources to be translated and marked) cannot match the fetched original verbatim, so it is exempt from
     the verbatim check and reported separately; its figures are still number-checked like any other prose."""
-    text = re.sub(r"(?<!\n)\n(?!\n)", " ", _strip_blocks(markdown))  # a quotation may wrap across source lines
     verbatim: list[str] = []
     translated: list[str] = []
-    for match in _QUOTE_RE.finditer(text):
-        raw = match.group(1)
-        quote = re.sub(r"\s+", " ", raw).strip()
-        if len(quote.split()) < 6 or "\n\n" in raw:  # a span crossing a paragraph break is two quotations' worth of noise
-            continue
-        around = text[max(0, match.start() - 60):match.start()] + " " + text[match.end():match.end() + 90]
-        (translated if _TRANSLATION_CUE_RE.search(around) else verbatim).append(quote)
+    for paragraph in re.split(r"\n\s*\n", _strip_blocks(markdown)):
+        paragraph = re.sub(r"\s*\n\s*", " ", paragraph)  # a quotation may wrap across source lines
+        for start, end in _quote_spans(paragraph):
+            quote = re.sub(r"\s+", " ", paragraph[start:end]).strip()
+            if len(paragraph[start:end]) < 20 or len(quote.split()) < 6:
+                continue
+            around = paragraph[max(0, start - 61):start - 1] + " " + paragraph[end + 1:end + 91]
+            (translated if _TRANSLATION_CUE_RE.search(around) else verbatim).append(quote)
     return verbatim, translated
 
 

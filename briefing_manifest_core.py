@@ -1250,11 +1250,13 @@ def evaluate_item_rules(
             1 for tag in item.get("source_sections_cited", []) if tag == section
         )
         if section_pool_hits < min_section_sources:
-            blocking.append(
+            message = (
                 f"{prefix}: cites only {section_pool_hits} sources from the {section}-tagged "
                 f"catalog pool (minimum is {min_section_sources}); open SOURCES.md and pull "
                 f"from the dedicated section list — TIER 0 wires and cross-section sources do not count"
             )
+            # A live run failed three verified articles on this rule alone. An edition can make it a goal, not a gate.
+            (blocking if rules.get("section_sources_blocking", True) else warnings).append(message)
     for label in (item.get("missing_required_blocks") or {}).get("blocking", []):
         blocking.append(f"{prefix}: missing required block: {label}")
     for label in (item.get("missing_required_blocks") or {}).get("warning", []):

@@ -143,7 +143,13 @@ variants = {{
   "one_first_person": base.replace("### What happened\n", "### What happened\n\nThe totals are my own division of the two reported figures.\n"),
   "roman_numerals": base.replace("### What happened\n", "### What happened\n\nThe species is on CITES Appendix I species lists, and Part I taxa are covered. The authors wrote \"I could not find any such record in the files we examined\" in the discussion.\n"),
 }}
-print(json.dumps({{k: rules(v) for k, v in variants.items()}}))
+result = {{k: rules(v) for k, v in variants.items()}}
+pool_item = m.build_item_manifest("animals", date, "T", base.partition("\\n")[2], prior_items=[], image_metadata={{}}, source_audit=None)
+pool_item["source_incorporated"] = True
+pool_item["source_sections_cited"] = ["animals"]
+pool = m.evaluate_item_rules("animals", pool_item, m.SECTION_RULES["animals"], audit_available=True)
+result["pool_rule"] = {{"blocking": pool["blocking"], "warnings": pool["warnings"]}}
+print(json.dumps(result))
 '''
 
 
@@ -200,6 +206,11 @@ class AnimalValidatorTests(unittest.TestCase):
     def test_references_to_the_pipelines_own_machinery_are_blocking_but_quoted_text_is_not(self) -> None:
         self.assertIn("pipeline's own machinery", self.blocking("process_leak"))
         self.assertEqual(self.result["dossier_in_a_quote"]["blocking"], [])
+
+    def test_too_few_catalog_sources_is_a_warning_not_a_gate_for_this_edition(self) -> None:
+        # A live run failed three otherwise verified articles on this rule alone.
+        self.assertEqual([b for b in self.result["pool_rule"]["blocking"] if "catalog pool" in b], [])
+        self.assertTrue(any("cites only 1 sources from the animals-tagged catalog pool" in w for w in self.result["pool_rule"]["warnings"]))
 
     def test_source_minimum_and_taxonomy_warning(self) -> None:
         self.assertIn("source threshold", self.blocking("few_sources"))

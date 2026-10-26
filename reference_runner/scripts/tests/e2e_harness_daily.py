@@ -138,7 +138,7 @@ assembled = arch / f"{stem}-{DATE}.md"
 pdf = gen / f"{stem}-{DATE}.pdf"
 out = {
     "exit": code, "calls": calls, "delivered": bool(conductor.state.state.get("delivered")), "pdf_exists": pdf.exists(),
-    "articles_done": sorted(p.stem for p in conductor.articles_dir.glob("*.md") if not p.stem.endswith(".raw")),
+    "articles_done": sorted(p.stem for p in conductor.articles_dir.glob("*.md") if not p.stem.endswith((".raw", ".last"))),
     "stages": {k: v.get("status") for k, v in conductor.state.state["stages"].items() if not k.startswith("article:")},
     "short_sections": conductor.state.state["stages"].get("articles", {}).get("short_sections"),
     "notes": conductor.state.state.get("delivery_notes"), "events": [e["message"] for e in conductor.state.state["events"]][-30:],

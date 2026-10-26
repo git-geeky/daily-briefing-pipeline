@@ -27,6 +27,7 @@
       "min_sources": 6,
       "min_source_classes": 3,
       "min_section_sources": 3,
+      "section_sources_blocking": false,
       "image_floor": 1,
       "score_floor": 60,
       "expansion_score_floor": 75

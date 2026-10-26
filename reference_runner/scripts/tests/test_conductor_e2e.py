@@ -223,6 +223,13 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertTrue(any("sent on its own (late)" in n for n in result["notes"]), result["notes"])
         self.assertNotIn("held", result["delivered_info"])
 
+    def test_a_slate_without_reserves_is_topped_up_once_so_a_failed_story_can_be_replaced(self) -> None:
+        result = run_harness("slate_topup", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertEqual(result["calls"]["slate"], 2)
+        self.assertTrue(any("4 reserve stories added" in e for e in result["events"]), result["events"])
+        self.assertTrue(any("10 selected, 5 backups" in e for e in result["events"]), result["events"])
+
     def test_script_fetched_dossier_reaches_the_writer_and_its_text_counts_as_opened_source(self) -> None:
         result = run_harness("dossier_quote", self.fresh())
         self.assertEqual(result["exit"], 0, result["events"])

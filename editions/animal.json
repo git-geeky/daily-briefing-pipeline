@@ -1,0 +1,184 @@
+{
+  "edition_id": "animal",
+  "label": "The Animal Science Briefing",
+  "description": "Daily long-form briefing on the day's most important animal-science stories, written for a reader who already knows the field. Ten in-depth articles when the material supports it (six at minimum), each with licensed photographs, taxonomic and conservation-status data, a study card, stated limits, a counterpoint matrix and dated things to watch. Animal-cruelty coverage is excluded.",
+  "profile": {
+    "root_subdir": "animal",
+    "stem_suffix": "animal-briefing",
+    "label": "The Animal Science Briefing",
+    "author": "Animal Science Report"
+  },
+  "sections": ["animals", "digest"],
+  "section_titles": {
+    "animals": "THE DAY IN ANIMAL SCIENCE",
+    "digest": "ALSO NOTED"
+  },
+  "section_rules": {
+    "animals": {
+      "min_count": 6,
+      "target_count": 10,
+      "max_count": 12,
+      "min_words": 3500,
+      "soft_min_words": 2500,
+      "hard_floor": 1500,
+      "min_sources": 6,
+      "min_source_classes": 3,
+      "min_section_sources": 3,
+      "image_floor": 1,
+      "score_floor": 60,
+      "expansion_score_floor": 75
+    },
+    "digest": {
+      "min_count": 0,
+      "target_count": 6,
+      "max_count": 10,
+      "min_words": 160,
+      "soft_min_words": 110,
+      "hard_floor": 60,
+      "min_sources": 2,
+      "min_source_classes": 1,
+      "min_section_sources": 1,
+      "score_floor": 40,
+      "expansion_score_floor": 55
+    }
+  },
+  "hard_news_sections": ["animals"],
+  "counterpoint_required_sections": ["animals"],
+  "watch_required_sections": ["animals"],
+  "toc_sections": ["animals", "digest"],
+  "closing_section": null,
+  "header": {
+    "exec_summary_words": [250, 750],
+    "min_cross_references": 2,
+    "cross_reference_label": "Cross-currents"
+  },
+  "images": {
+    "mode": "per_article",
+    "per_article_min": 1,
+    "per_article_max": 2,
+    "max_total": 24,
+    "require_license_line": true,
+    "weak_tokens": ["logo", "flag of", "headshot", "watermark"],
+    "evidentiary_tokens": []
+  },
+  "rules": {
+    "focus_beat_required": false,
+    "hn_target": 0,
+    "min_assembled_bytes": 71680,
+    "native_language_audit": false,
+    "min_native_language_articles": 3,
+    "watch_label": "Watch Next",
+    "watch_heading_regex": "watch\\s+next\\b"
+  },
+  "banned_topic_labels": [],
+  "extra_banned_topic_rules": [
+    {
+      "label": "animal cruelty or abuse case coverage",
+      "pattern": "\\b(?:animal (?:cruelty|abuse|torture|neglect cases?)|cruelty to animals|animal fighting|dog[- ]?fight(?:ing|s)?|cock[- ]?fight(?:ing|s)?|bull[- ]?fight(?:ing|s)?|bear[- ]baiting|puppy mills?|kitten mills?|animal hoarding|horse soring|skinned alive|live[- ]skinn(?:ed|ing)|slaughterhouse (?:footage|video|abuse)|tortur(?:e|ed|ing) (?:of )?(?:a |an |the )?(?:dogs?|cats?|puppy|puppies|kittens?|horses?|animals?))\\b",
+      "min_body_mentions": 2
+    },
+    {
+      "label": "graphic animal-harm content",
+      "pattern": "\\b(?:mutilat(?:ed|ion)|disembowel(?:led)?|dismember(?:ed|ment)|brutally (?:killed|beaten|slaughtered))\\b",
+      "min_body_mentions": 3
+    }
+  ],
+  "required_blocks": {
+    "animals": [
+      {
+        "id": "bottom_line",
+        "label": "Bottom line (2-3 sentence verdict)",
+        "severity": "blocking",
+        "any_of": ["^[ \\t>]*\\*\\*bottom line:?\\*\\*"]
+      },
+      {
+        "id": "confidence",
+        "label": "Confidence label (High/Medium/Low with reason)",
+        "severity": "blocking",
+        "any_of": ["^[ \\t>]*\\*\\*confidence:?\\*\\*:?[ \\t]*(?:high|medium|low)\\b"]
+      },
+      {
+        "id": "scientific_names",
+        "label": "Italicised scientific binomial for each species discussed",
+        "severity": "blocking",
+        "any_of": ["(?<![\\w*])\\*[A-Z][a-z]{2,} [a-z]{3,}(?: [a-z]{3,})?\\*(?![\\w*])"]
+      },
+      {
+        "id": "taxonomy_status",
+        "label": "Taxonomy & Status table (IUCN / CITES / range)",
+        "severity": "warning",
+        "any_of": ["^\\|[^\\n]*\\b(?:IUCN|Red List)\\b[^\\n]*\\|", "^\\|[^\\n]*\\bCITES\\b[^\\n]*\\|"]
+      },
+      {
+        "id": "evidence_card",
+        "label": "Evidence / study card",
+        "severity": "warning",
+        "any_of": ["^#{2,4}[ \\t]*(?:the )?(?:evidence|study card|evidence card|evidence trail)", "\\*\\*(?:study|evidence) card"]
+      },
+      {
+        "id": "methods_limits",
+        "label": "Methods & limits (what the evidence cannot show)",
+        "severity": "warning",
+        "any_of": ["^#{2,4}[ \\t]*(?:methods|limits|limitations|what the (?:data|study|evidence))"]
+      },
+      {
+        "id": "doi",
+        "label": "DOI for each study cited",
+        "severity": "warning",
+        "any_of": ["\\b10\\.\\d{4,9}/[^\\s)\\]>\"'|]+"]
+      }
+    ]
+  },
+  "technical_keywords": [
+    "phylogen", "genom", "haplotype", "mitochond", "mark-recapture", "telemetry", "gps collar",
+    "edna", "metabarcoding", "population viability", "life history", "allometr", "pharmacokinetic",
+    "seroprevalence", "serolog", "phenotyp", "trophic", "occupancy model", "bioacoustic",
+    "stable isotope", "radiocarbon", "cites appendix", "red list", "karyotype", "microbiome",
+    "transcriptom", "heritabilit", "demograph", "dispersal", "foraging"
+  ],
+  "technical_sections": ["animals"],
+  "catalogs": ["sources.md", "animal-sources.md"],
+  "catalog_include_buckets": [
+    "ANIMAL", "WIRE SERVICES", "AGGREGATORS", "SCIENCE & HEALTH", "SPACE, CLIMATE",
+    "NATIVE-LANGUAGE", "AFRICA", "LATIN AMERICA", "SOUTH & SOUTHEAST ASIA", "EUROPEAN UNION", "TAIWAN"
+  ],
+  "source_credit_extra": {
+    "SCIENCE & HEALTH": ["animals", "digest"],
+    "SPACE, CLIMATE": ["animals", "digest"]
+  },
+  "photos": {
+    "providers": ["wikimedia", "inaturalist", "openverse"],
+    "licenses": ["cc0", "pd", "cc-by", "cc-by-sa"],
+    "min_width": 1200,
+    "prefer_aspect": [1.2, 1.9],
+    "caption_template": "{description}. Photo: {creator}, {license}, via {provider} ({page_url})"
+  },
+  "conductor": {
+    "article_target": 10,
+    "article_min": 6,
+    "article_max": 12,
+    "slate_candidates": 14,
+    "digest_items": 6,
+    "article_words_target": 3500,
+    "article_words_floor": 1500,
+    "max_parallel_articles": 2,
+    "models": {
+      "classify": {"model": "haiku", "effort": "low"},
+      "slate": {"model": "opus", "effort": "medium"},
+      "article": {"model": "sonnet", "effort": "medium"},
+      "repair": {"model": "sonnet", "effort": "low"},
+      "header": {"model": "opus", "effort": "low"},
+      "digest": {"model": "sonnet", "effort": "low"},
+      "review": {"model": "claude-fable-5-1", "effort": "medium", "optional": true, "fallback": "opus"}
+    },
+    "budget": {
+      "max_cost_usd_per_run": 40.0,
+      "max_cost_usd_per_article": 4.0,
+      "max_cost_usd_per_day": 60.0
+    },
+    "delivery": {
+      "subject_template": "The Animal Science Briefing - {human_date}",
+      "recipients_env": "ANIMAL_BRIEFING_RECIPIENTS"
+    }
+  }
+}

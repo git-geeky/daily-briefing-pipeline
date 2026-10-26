@@ -132,7 +132,10 @@ def validate_briefing(
         )
     min_cross_refs = int(EDITION.header.get("min_cross_references", 3))
     if len(header["cross_references"]) < min_cross_refs:
-        blocking_errors.append("Header is missing one or more Top 3 Structural Forces cross-references")
+        blocking_errors.append(
+            f"Header is missing one or more {EDITION.header.get('cross_reference_label', 'Top 3 Structural Forces')} cross-references "
+            f"(need {min_cross_refs}, found {len(header['cross_references'])})"
+        )
     for reference in header["cross_references"]:
         if not any(titles_match(reference, title) for title in title_set):
             blocking_errors.append(f'Header cross-reference does not match a real article title: "{reference}"')
@@ -172,6 +175,19 @@ def validate_briefing(
             f"Briefing includes fewer than {hn_target} Hacker News-driven stories; "
             "run a second AI/tech discovery pass or record the shortfall explicitly"
         )
+    min_native_articles = int(EDITION.rules.get("min_native_language_articles", 0) or 0)
+    if min_native_articles:
+        native_articles = sum(
+            1
+            for section in SECTION_RULES
+            for item in manifests[section]["items"]
+            if not item.get("quality_failure") and item.get("native_language_sources")
+        )
+        if native_articles < min_native_articles:
+            warnings.append(
+                f"Only {native_articles} article(s) cite a native-language source from the catalog "
+                f"(target {min_native_articles}); search national-language outlets for locally reported stories"
+            )
     total_inline_images = int(assembled_manifest["summary"].get("total_inline_images") or 0)
     total_high_confidence_images = int(assembled_manifest["summary"].get("total_high_confidence_images") or 0)
     has_image_quality_failure = IMAGE_QUALITY_FAILURE_TEXT in assembled_text

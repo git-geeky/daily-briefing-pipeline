@@ -5,6 +5,7 @@ import os
 import re
 import sys
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 
 from briefing_paths import (
@@ -352,8 +353,11 @@ def extract_cross_references(text: str) -> list[str]:
 TOP_LEVEL_TITLE_RE = re.compile(r"(?m)^#\s+(.+)$")
 H2_SPLIT_RE = re.compile(r"(?m)^##\s+")
 IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+# The daily briefing's watch block is "Watch Next 48h"; other editions can widen the window
+# (the animal edition watches dated events over weeks) via rules.watch_heading_regex/watch_label.
+WATCH_LABEL = str(EDITION.rules.get("watch_label") or "Watch Next 48h")
 WATCH_NEXT_HEADING_RE = re.compile(
-    r"watch\s+next\s+48\s*(?:h|hr|hrs|hours?)\b",
+    str(EDITION.rules.get("watch_heading_regex") or r"watch\s+next\s+48\s*(?:h|hr|hrs|hours?)\b"),
     re.IGNORECASE,
 )
 
@@ -789,7 +793,9 @@ def build_item_manifest(
         source_appendix_present=bool(sources),
         image_quality=image_quality,
         banned_topics=banned_topics,
-        native_language_audit=audit_native_language_sources(title, body, sources),
+        native_language_audit=(
+            audit_native_language_sources(title, body, sources) if EDITION.rules.get("native_language_audit", True) else []
+        ),
         update_of_prior_story=update_of_prior_story,
         score=score,
     )
@@ -824,6 +830,9 @@ def build_item_manifest(
         "counterpoint_rows": counterpoint_rows,
         "official_next_48h_sources": dedupe_preserve(official_watch_sources),
         "watch_next_48h": watch_entries,
+        "native_language_sources": native_language_domains(
+            [url for entry in sources for url in _URL_IN_ENTRY_RE.findall(entry)]
+        ),
         "image_candidates": images,
         "image_quality": image_quality,
         "hn_origin": any("hacker news" in source.lower() or "news.ycombinator.com" in source.lower() for source in sources)
@@ -1142,12 +1151,12 @@ def build_preflight_scorecard(
         if section in COUNTERPOINT_REQUIRED_SECTIONS and counterpoint_rows < 1:
             hard_failures.append("Missing Counterpoint Matrix")
         if section in WATCH_REQUIRED_SECTIONS and watch_entries < 1:
-            hard_failures.append("Missing Watch Next 48h")
+            hard_failures.append(f"Missing {WATCH_LABEL}")
         if rules.get("reader_value_required") and not reader_value["passes"]:
             hard_failures.append("Reader value gate failed")
         if section in HARD_NEWS_SECTIONS and image_quality.get("total", 0) < rules.get("image_floor", 0):
             soft_flags.append("No drafted inline image support")
-        if section in HARD_NEWS_SECTIONS and image_quality.get("all_low_evidence"):
+        if section in HARD_NEWS_SECTIONS and EDITION.image_mode != "per_article" and image_quality.get("all_low_evidence"):
             soft_flags.append("Only low-evidence images are present")
         if any(
             finding.get("mentioned")
@@ -1204,7 +1213,7 @@ def evaluate_item_rules(
     if section in COUNTERPOINT_REQUIRED_SECTIONS and not item["has_counterpoint_matrix"]:
         blocking.append(f"{prefix}: missing Counterpoint Matrix")
     if section in WATCH_REQUIRED_SECTIONS and not item["watch_next_48h"]:
-        blocking.append(f"{prefix}: missing Watch Next 48h block")
+        blocking.append(f"{prefix}: missing {WATCH_LABEL} block")
     if not item["source_appendix_present"]:
         blocking.append(f"{prefix}: missing source appendix")
     soft_min = rules.get("soft_min_words", rules["min_words"])
@@ -1304,7 +1313,7 @@ def evaluate_item_rules(
                 warnings.append(
                     f"{prefix}: mentions {region}-region story but cites no native-language source (expected one of: {expected})"
                 )
-    if section in HARD_NEWS_SECTIONS and item["image_quality"]["all_low_evidence"]:
+    if section in HARD_NEWS_SECTIONS and edition.image_mode != "per_article" and item["image_quality"]["all_low_evidence"]:
         warnings.append(f"{prefix}: images are present but all are low-evidence for the article")
     if item["score"]["overall"] < 60:
         warnings.append(f'{prefix}: story score is low ({item["score"]["overall"]})')
@@ -1684,8 +1693,22 @@ def evaluate_required_blocks(section: str, body: str, *, edition=None) -> dict[s
     return result
 
 
+def _image_tokens_match(haystack: str, tokens) -> bool:
+    return any(re.search(rf"\b{re.escape(str(token).lower())}\b", haystack) for token in tokens)
+
+
 def classify_image_kind(alt: str, url: str) -> str:
     haystack = f"{alt} {url}".lower()
+    # Editions that publish photographs (animal) override the token lists and get word-boundary
+    # matching: the legacy substring match tags "Maple" as a map and "portrait" captions as weak.
+    configured_weak = EDITION.images.get("weak_tokens")
+    configured_evidentiary = EDITION.images.get("evidentiary_tokens")
+    if configured_weak is not None or configured_evidentiary is not None:
+        if _image_tokens_match(haystack, configured_evidentiary or ()):
+            return "evidentiary"
+        if _image_tokens_match(haystack, configured_weak or ()):
+            return "weak"
+        return "other"
     if any(token in haystack for token in EVIDENTIARY_IMAGE_TOKENS):
         return "evidentiary"
     if any(token in haystack for token in WEAK_IMAGE_TOKENS):
@@ -1892,11 +1915,89 @@ def _domain_matches(host: str, domains: frozenset[str]) -> bool:
     return any(host == domain or host.endswith("." + domain) for domain in domains)
 
 
+_CATALOG_TIER_CLASS = {"primary-research": "research", "primary-data": "data", "institutional": "official"}
+
+
+@lru_cache(maxsize=1)
+def _catalog_domain_classes() -> dict[str, str]:
+    """domain -> source class for the active edition's catalogs, from each ``*.meta.json`` sidecar.
+
+    Editions with a specialist catalog (the animal edition lists hundreds of journals, agencies
+    and registries) would otherwise see every unlisted domain as generic "reporting" and fail
+    the source-class mix rule.
+    """
+    root = Path(__file__).resolve().parent / "references"
+    mapping: dict[str, str] = {}
+    for name in EDITION.catalogs:
+        meta_path = (root / name).with_suffix(".meta.json")
+        if not meta_path.exists():
+            continue
+        try:
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for entry in payload.values():
+            if not isinstance(entry, dict):
+                continue
+            domain = str(entry.get("domain") or "").lower().removeprefix("www.")
+            klass = _CATALOG_TIER_CLASS.get(str(entry.get("tier") or ""))
+            if domain and klass:
+                mapping.setdefault(domain, klass)
+    return mapping
+
+
+@lru_cache(maxsize=1)
+def _catalog_domain_languages() -> dict[str, str]:
+    """domain -> language code from the active catalogs' meta sidecars (non-English only matters)."""
+    root = Path(__file__).resolve().parent / "references"
+    mapping: dict[str, str] = {}
+    for name in EDITION.catalogs:
+        meta_path = (root / name).with_suffix(".meta.json")
+        if not meta_path.exists():
+            continue
+        try:
+            payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for entry in payload.values():
+            if isinstance(entry, dict) and entry.get("domain") and entry.get("lang"):
+                mapping.setdefault(str(entry["domain"]).lower().removeprefix("www."), str(entry["lang"]).lower())
+    return mapping
+
+
+def native_language_domains(urls: list[str]) -> list[str]:
+    """Cited domains that the catalog lists as non-English (native-language) sources."""
+    table = _catalog_domain_languages()
+    found: list[str] = []
+    for url in urls:
+        labels = registrable_domain(url).split(".")
+        for start in range(len(labels) - 1):
+            lang = table.get(".".join(labels[start:]))
+            if lang:
+                if lang != "en":
+                    found.append(".".join(labels[start:]))
+                break
+    return dedupe_preserve(found)
+
+
+def _catalog_class_for_host(host: str) -> str | None:
+    table = _catalog_domain_classes()
+    labels = host.split(".")
+    for start in range(len(labels) - 1):
+        found = table.get(".".join(labels[start:]))
+        if found:
+            return found
+    return None
+
+
 def classify_source_url(url: str) -> set[str]:
     host = registrable_domain(url)
     if not host:
         return set()
     classes: set[str] = set()
+    catalog_class = _catalog_class_for_host(host)
+    if catalog_class:
+        classes.add(catalog_class)
     if _domain_matches(host, _WIRE_DOMAINS):
         classes.add("wire")
     if _domain_matches(host, _PAYWALLED_DOMAINS):

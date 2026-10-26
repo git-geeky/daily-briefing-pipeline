@@ -174,10 +174,27 @@ def credit_sections_for_bucket(bucket: str) -> tuple[str, ...]:
     upper = bucket.upper()
     # Order matters: "PART II/III/IV" all contain "PART I" as a substring, so the
     # longer roman numerals are listed (and matched) first; the first hit wins.
+    base: tuple[str, ...] = ()
     for needle, sections in _BUCKET_CREDIT_RULES:
         if needle in upper:
-            return sections
-    return ()
+            base = sections
+            break
+    # Editions can credit general-catalog buckets to their own sections (the animal edition
+    # counts SCIENCE & HEALTH and SPACE, CLIMATE & ENVIRONMENT rows toward its section floor).
+    extra: list[str] = []
+    for needle, sections in (edition_core.load_edition().extra.get("source_credit_extra") or {}).items():
+        if needle.upper() in upper:
+            extra.extend(sections)
+    return tuple(dict.fromkeys([*base, *extra]))
+
+
+def bucket_included(bucket: str) -> bool:
+    """Edition filter on which catalog buckets the daily audit covers (``catalog_include_buckets``)."""
+    include = edition_core.load_edition().extra.get("catalog_include_buckets")
+    if not include:
+        return True
+    upper = bucket.upper()
+    return any(str(needle).upper() in upper for needle in include)
 
 
 def section_for_bucket(bucket: str) -> str | None:
@@ -304,12 +321,15 @@ def parse_source_catalog(path: Path | None = None) -> list[SourceCatalogEntry]:
 
 def parse_source_catalogs(paths: list[Path] | None = None) -> list[SourceCatalogEntry]:
     """Parse several catalogs into one list; duplicate catalog numbers across files are an error."""
+    filtered_default = not paths
     catalogs = paths or default_catalog_paths()
     combined: list[SourceCatalogEntry] = []
     seen_numbers: dict[int, Path] = {}
     index_by_url: dict[str, int] = {}
     for catalog in catalogs:
         for entry in parse_source_catalog(catalog):
+            if filtered_default and not bucket_included(entry.major_bucket):
+                continue
             if entry.catalog_number in seen_numbers:
                 raise ValueError(
                     f"Catalog number {entry.catalog_number} appears in both {seen_numbers[entry.catalog_number]} and {catalog}"

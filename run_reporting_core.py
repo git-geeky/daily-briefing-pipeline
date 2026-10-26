@@ -126,6 +126,7 @@ def default_run_report(date: str) -> dict[str, Any]:
         "manifest_summary": {},
         "candidate_rejections": [],
         "source_audit": {},
+        "usage": {"calls": [], "totals": {}, "by_stage": {}, "by_model": {}},
         "updated_at": iso_now(),
     }
 
@@ -325,6 +326,80 @@ def set_step_timing(
     if details:
         payload[step]["details"] = details
     return update_run_report(date, timings=payload)
+
+
+USAGE_CALL_LIMIT = 400
+_USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "cost_usd", "duration_seconds")
+
+
+def _blank_usage() -> dict[str, float]:
+    return {"calls": 0, **{field: 0 for field in _USAGE_FIELDS}}
+
+
+def _recompute_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    totals, by_stage, by_model = _blank_usage(), {}, {}
+    for call in usage.get("calls", []):
+        for bucket in (totals, by_stage.setdefault(call.get("stage") or "?", _blank_usage()),
+                       by_model.setdefault(call.get("model") or "?", _blank_usage())):
+            bucket["calls"] += 1
+            for field in _USAGE_FIELDS:
+                bucket[field] += float(call.get(field) or 0)
+    for bucket in (totals, *by_stage.values(), *by_model.values()):
+        bucket["cost_usd"] = round(bucket["cost_usd"], 4)
+        bucket["duration_seconds"] = round(bucket["duration_seconds"], 1)
+        for field in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"):
+            bucket[field] = int(bucket[field])
+    usage["totals"], usage["by_stage"], usage["by_model"] = totals, by_stage, by_model
+    return usage
+
+
+def record_usage(
+    date: str,
+    stage: str,
+    *,
+    model: str | None = None,
+    backend: str = "claude",
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
+    cost_usd: float = 0.0,
+    duration_seconds: float = 0.0,
+    ok: bool = True,
+    error: str | None = None,
+    label: str | None = None,
+) -> dict[str, Any]:
+    """Append one model call to the run report and refresh the usage rollups.
+
+    The scheduled runs that died in 2026 never recorded what they spent, so nobody could see
+    which stage drained the allowance. Every conductor call goes through here.
+    """
+    report = load_run_report(date)
+    usage = report.get("usage")
+    if not isinstance(usage, dict):
+        usage = {"calls": []}
+    calls = list(usage.get("calls") or [])
+    calls.append(
+        {
+            "at": iso_now(),
+            "stage": stage,
+            "label": label,
+            "model": model,
+            "backend": backend,
+            "input_tokens": int(input_tokens or 0),
+            "output_tokens": int(output_tokens or 0),
+            "cache_read_tokens": int(cache_read_tokens or 0),
+            "cache_creation_tokens": int(cache_creation_tokens or 0),
+            "cost_usd": round(float(cost_usd or 0.0), 4),
+            "duration_seconds": round(float(duration_seconds or 0.0), 1),
+            "ok": bool(ok),
+            "error": (error or None) and str(error)[:300],
+        }
+    )
+    usage["calls"] = calls[-USAGE_CALL_LIMIT:]
+    report["usage"] = _recompute_usage(usage)
+    write_run_report(report)
+    return report["usage"]
 
 
 def _run_report_dir() -> Path:

@@ -40,13 +40,12 @@ if str(_HERE) not in sys.path:
 
 import briefing_paths  # noqa: E402
 from briefing_manifest_core import (  # noqa: E402
-    COUNTERPOINT_REQUIRED_SECTIONS,
-    HARD_NEWS_SECTIONS,
     SECTION_RULES,
-    WATCH_REQUIRED_SECTIONS,
+    evaluate_item_rules,
     generate_fragment_manifest,
     load_image_metadata,
     load_prior_items,
+    load_source_audit,
 )
 
 
@@ -70,8 +69,9 @@ def validate_fragment(
 
     prior_items = load_prior_items(date)
     image_metadata = load_image_metadata(date)
+    source_audit = load_source_audit(date)
     manifest = generate_fragment_manifest(
-        section, date, text, prior_items=prior_items, image_metadata=image_metadata
+        section, date, text, prior_items=prior_items, image_metadata=image_metadata, source_audit=source_audit
     )
 
     blocking: list[str] = []
@@ -108,64 +108,24 @@ def validate_fragment(
                     f"{section}: article count is {len(real_items)} but expected {rules['exact_count']}"
                 )
     else:
-        if len(real_items) < rules["min_count"] and not failure_items:
-            blocking.append(
-                f"{section}: article count is {len(real_items)} but minimum is {rules['min_count']}"
-            )
+        if len(real_items) < rules["min_count"]:
+            message = f"{section}: article count is {len(real_items)} but minimum is {rules['min_count']}"
+            if failure_items:
+                warnings.append(f"{message} (explicit quality-failure marker present)")
+            else:
+                blocking.append(message)
         if len(real_items) > rules["max_count"]:
             blocking.append(
                 f"{section}: article count is {len(real_items)} but maximum is {rules['max_count']}"
             )
 
+    # Same per-article rules as the full validator (single shared implementation). The
+    # source-audit-dependent rules only apply once today's audit exists.
     for item in real_items:
-        prefix = f'{section}/{item["title"]}'
-        if section in COUNTERPOINT_REQUIRED_SECTIONS and not item["has_counterpoint_matrix"]:
-            blocking.append(f"{prefix}: missing Counterpoint Matrix")
-        if section in WATCH_REQUIRED_SECTIONS and not item["watch_next_48h"]:
-            blocking.append(f"{prefix}: missing Watch Next 48h block")
-        if not item["source_appendix_present"]:
-            blocking.append(f"{prefix}: missing source appendix")
-
-        soft_min = rules.get("soft_min_words", rules["min_words"])
-        hard_floor = rules.get("hard_floor", soft_min)
-        wc = item["word_count"]
-        if wc < hard_floor:
-            blocking.append(
-                f"{prefix}: article is below the hard word floor "
-                f"({wc} < {hard_floor}); target is {rules['min_words']}"
-            )
-        elif wc < soft_min:
-            nonblocking.append(
-                f"{prefix}: article is below the soft word threshold but above the hard floor "
-                f"({wc} < {soft_min}, >= {hard_floor})"
-            )
-        elif wc < rules["min_words"]:
-            warnings.append(
-                f"{prefix}: article is below the target word count but within the soft band "
-                f"({wc} < {rules['min_words']}, >= {soft_min})"
-            )
-
-        if item["source_count"] < rules["min_sources"]:
-            blocking.append(
-                f"{prefix}: article is below the source threshold ({item['source_count']} < {rules['min_sources']})"
-            )
-        if item["banned_topics"]:
-            blocking.append(f"{prefix}: contains banned topic(s): {', '.join(item['banned_topics'])}")
-        if item["has_body_links"]:
-            blocking.append(f"{prefix}: contains external links in the body outside the source appendix")
-        if item["relative_time_mentions"] and not item["has_exact_jst_date"]:
-            blocking.append(f"{prefix}: uses relative timing without an exact JST date/time anchor")
-        if item["needs_second_pass"]:
-            blocking.append(f"{prefix}: thin sourcing requires a second corroboration pass")
-        if item["image_quality"]["duplicate_urls"]:
-            blocking.append(f"{prefix}: contains duplicate image URLs in a single article")
-        if section in HARD_NEWS_SECTIONS and item["image_quality"].get("all_placeholder"):
-            blocking.append(
-                f"{prefix}: image set is only placeholder local SVG cards; replace with source-derived "
-                "or genuinely evidentiary visuals"
-            )
-        if section in HARD_NEWS_SECTIONS and item["image_quality"].get("placeholder_count", 0) > 0:
-            warnings.append(f"{prefix}: contains {item['image_quality']['placeholder_count']} placeholder image card(s)")
+        result = evaluate_item_rules(section, item, rules, audit_available=bool(source_audit))
+        blocking.extend(result["blocking"])
+        nonblocking.extend(result["nonblocking"])
+        warnings.extend(result["warnings"])
 
     return {
         "section": section,

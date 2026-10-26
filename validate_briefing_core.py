@@ -14,6 +14,7 @@ from briefing_manifest import (
     SECTION_RULES,
     WATCH_REQUIRED_SECTIONS,
     build_assembled_manifest,
+    evaluate_item_rules,
     generate_all_manifests,
     titles_match,
 )
@@ -279,114 +280,11 @@ def validate_briefing(
             warnings.append("Updates section is populated; verify it is based on prior-briefing context rather than reused draft text")
 
         for item in real_items:
-            prefix = f'{section}/{item["title"]}'
-            if section in COUNTERPOINT_REQUIRED_SECTIONS and not item["has_counterpoint_matrix"]:
-                blocking_errors.append(f"{prefix}: missing Counterpoint Matrix")
-            if section in WATCH_REQUIRED_SECTIONS and not item["watch_next_48h"]:
-                blocking_errors.append(f"{prefix}: missing Watch Next 48h block")
-            if not item["source_appendix_present"]:
-                blocking_errors.append(f"{prefix}: missing source appendix")
-            soft_min = rules.get("soft_min_words", rules["min_words"])
-            hard_floor = rules.get("hard_floor", soft_min)
-            if item["word_count"] < hard_floor:
-                blocking_errors.append(
-                    f'{prefix}: article is below the hard word floor '
-                    f'({item["word_count"]} < {hard_floor}); target is {rules["min_words"]}'
-                )
-            elif item["word_count"] < soft_min:
-                nonblocking_errors.append(
-                    f'{prefix}: article is below the soft word threshold but above the hard floor '
-                    f'({item["word_count"]} < {soft_min}, >= {hard_floor})'
-                )
-            elif item["word_count"] < rules["min_words"]:
-                warnings.append(
-                    f'{prefix}: article is below the target word count but within the soft band '
-                    f'({item["word_count"]} < {rules["min_words"]}, >= {soft_min})'
-                )
-            if item["source_count"] < rules["min_sources"]:
-                blocking_errors.append(
-                    f'{prefix}: article is below the source threshold ({item["source_count"]} < {rules["min_sources"]})'
-                )
-            if not item.get("source_incorporated"):
-                blocking_errors.append(f"{prefix}: cites no source checked in the daily source-audit catalog")
-            min_section_sources = rules.get("min_section_sources", 0)
-            if min_section_sources:
-                section_pool_hits = sum(
-                    1 for tag in item.get("source_sections_cited", []) if tag == section
-                )
-                if section_pool_hits < min_section_sources:
-                    blocking_errors.append(
-                        f"{prefix}: cites only {section_pool_hits} sources from the {section}-tagged "
-                        f"catalog pool (minimum is {min_section_sources}); open SOURCES.md and pull "
-                        f"from the dedicated section list — TIER 0 wires and cross-section sources do not count"
-                    )
-            for label in (item.get("missing_required_blocks") or {}).get("blocking", []):
-                blocking_errors.append(f"{prefix}: missing required block: {label}")
-            for label in (item.get("missing_required_blocks") or {}).get("warning", []):
-                warnings.append(f"{prefix}: missing recommended block: {label}")
-            if EDITION.image_mode != "single" and rules.get("image_floor"):
-                per_min = int(EDITION.images.get("per_article_min", 0) or 0)
-                per_max = int(EDITION.images.get("per_article_max", 0) or 0)
-                image_total = item["image_quality"]["total"]
-                if per_min and item["image_quality"]["high_confidence_count"] < per_min:
-                    warnings.append(f"{prefix}: has fewer than {per_min} validated photograph(s)")
-                    low_image_articles.append(
-                        {
-                            "section": section,
-                            "title": item["title"],
-                            "story_id": item["story_id"],
-                            "high_confidence_images": item["image_quality"]["high_confidence_count"],
-                        }
-                    )
-                if per_max and image_total > per_max:
-                    blocking_errors.append(
-                        f"{prefix}: embeds {image_total} images; this edition allows at most {per_max} per article"
-                    )
-                if EDITION.images.get("require_license_line") and image_total:
-                    unlicensed = [
-                        img["alt"][:60] for img in item.get("image_candidates", []) if not IMAGE_LICENSE_RE.search(img["alt"])
-                    ]
-                    if unlicensed:
-                        blocking_errors.append(
-                            f"{prefix}: {len(unlicensed)} image caption(s) carry no licence/credit "
-                            f"(CC BY / CC0 / public domain / press use ...): {unlicensed[0]!r}"
-                        )
-            if item["banned_topics"]:
-                blocking_errors.append(f"{prefix}: contains banned topic(s): {', '.join(item['banned_topics'])}")
-            if item.get("editorial_boilerplate"):
-                blocking_errors.append(
-                    f"{prefix}: contains repeated editorial process boilerplate "
-                    f"({', '.join(item['editorial_boilerplate'])})"
-                )
-            if item["has_body_links"]:
-                blocking_errors.append(f"{prefix}: contains external links in the body outside the source appendix")
-            if item["relative_time_mentions"] and not item["has_exact_jst_date"]:
-                blocking_errors.append(f"{prefix}: uses relative timing without an exact JST date/time anchor")
-            if item["needs_second_pass"]:
-                blocking_errors.append(f"{prefix}: thin sourcing requires a second corroboration pass")
-            if item["image_quality"]["duplicate_urls"]:
-                blocking_errors.append(f"{prefix}: contains duplicate image URLs in a single article")
-            if section in HARD_NEWS_SECTIONS and item["image_quality"].get("all_placeholder"):
-                blocking_errors.append(
-                    f"{prefix}: image set is only placeholder local SVG cards; replace with source-derived "
-                    "or genuinely evidentiary visuals"
-                )
-            if section in HARD_NEWS_SECTIONS and item["image_quality"].get("placeholder_count", 0) > 0:
-                warnings.append(
-                    f"{prefix}: contains {item['image_quality']['placeholder_count']} placeholder image card(s)"
-                )
-            if section in HARD_NEWS_SECTIONS:
-                for finding in item.get("native_language_audit", []):
-                    if finding.get("mentioned") and not finding.get("sourced"):
-                        region = finding["region"]
-                        expected = ", ".join(finding.get("domains_expected", []))
-                        warnings.append(
-                            f"{prefix}: mentions {region}-region story but cites no native-language source (expected one of: {expected})"
-                        )
-            if section in HARD_NEWS_SECTIONS and item["image_quality"]["all_low_evidence"]:
-                warnings.append(f"{prefix}: images are present but all are low-evidence for the article")
-            if item["score"]["overall"] < 60:
-                warnings.append(f'{prefix}: story score is low ({item["score"]["overall"]})')
+            result = evaluate_item_rules(section, item, rules, audit_available=True)
+            blocking_errors.extend(result["blocking"])
+            nonblocking_errors.extend(result["nonblocking"])
+            warnings.extend(result["warnings"])
+            low_image_articles.extend(result["low_image"])
 
     for issue in research_lint.get("issues") or []:
         message = f"Research lint {issue.get('rule')}: {issue.get('article') or issue.get('section') or 'run'}: {issue.get('message')}"

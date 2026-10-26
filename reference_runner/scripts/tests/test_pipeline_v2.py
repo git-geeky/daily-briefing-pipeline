@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import smtplib
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -21,6 +23,7 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 import briefing_manifest as manifest  # noqa: E402
+import deliver_core  # noqa: E402
 import edition_core  # noqa: E402
 
 DATE = "2026-10-25"
@@ -198,6 +201,150 @@ class AssemblyIsNonDestructiveTests(unittest.TestCase):
         self.assertTrue(candidates, "candidate pool was not written")
         merged = json.loads(candidates[0].read_text(encoding="utf-8"))
         self.assertEqual(merged["no_update_decisions"][0]["reason"], "nothing new")
+
+
+class FakeSMTP:
+    """Records what deliver_core does; ``failures`` are raised by successive connection attempts."""
+
+    instances: list["FakeSMTP"] = []
+    failures: list[BaseException] = []
+
+    def __init__(self, host, port, timeout=None):
+        if FakeSMTP.failures:
+            raise FakeSMTP.failures.pop(0)
+        self.host, self.port = host, port
+        self.calls: list[tuple] = []
+        FakeSMTP.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def ehlo(self):
+        self.calls.append(("ehlo",))
+
+    def starttls(self, context=None):
+        self.calls.append(("starttls", context))
+
+    def login(self, user, password):
+        self.calls.append(("login", user, password))
+
+    def send_message(self, msg, from_addr=None, to_addrs=None):
+        self.calls.append(("send", msg, from_addr, to_addrs))
+
+
+class DeliveryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        (self.dir / "pw.txt").write_text("app-password\n", encoding="utf-8")
+        self.config = {
+            "default_recipient": "owner@example.com",
+            "smtp_host": "smtp.example.com",
+            "smtp_port": 587,
+            "password_path_on_aiserver": str(self.dir / "pw.txt"),
+            "subject_template": "Daily ({runner_label}) - {human_date}",
+            "body_template": "{runner_label} {human_date} {pdf_sha256}",
+            "runner_labels": {"claude": "Claude"},
+            "receipt_dir": str(self.dir / "receipts"),
+            "editions": {
+                "animal": {
+                    "subject_template": "Animal Science Briefing - {human_date}",
+                    "recipients": ["owner@example.com", "reader2@example.com"],
+                }
+            },
+        }
+        self.config_path = self.dir / "delivery-config.json"
+        self.config_path.write_text(json.dumps(self.config), encoding="utf-8")
+        self.pdf = self.dir / "claude-daily-briefing-2026-10-25.pdf"
+        self.pdf.write_bytes(b"%PDF-1.4\n" + b"x" * (150 * 1024))
+        FakeSMTP.instances, FakeSMTP.failures = [], []
+        self.sleeps: list[float] = []
+        os.environ.pop("BRIEFING_RESTORE_FILE", None)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _send(self, **overrides):
+        kwargs = dict(
+            pdf_path=self.pdf, runner="claude", date=DATE, config_path=self.config_path,
+            smtp_factory=FakeSMTP, sleep=self.sleeps.append,
+        )
+        kwargs.update(overrides)
+        return deliver_core.send_briefing_email(**kwargs)
+
+    def test_multi_recipient_uses_verified_tls_and_explicit_sender(self) -> None:
+        result = self._send(recipient="a@example.com, b@example.com; a@example.com")
+        self.assertEqual(result["recipients"], ["a@example.com", "b@example.com"])
+        calls = FakeSMTP.instances[0].calls
+        tls = next(call for call in calls if call[0] == "starttls")[1]
+        self.assertIsInstance(tls, ssl.SSLContext)
+        self.assertEqual(tls.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(tls.check_hostname)
+        login = next(call for call in calls if call[0] == "login")
+        self.assertEqual(login[1], "owner@example.com")  # sender account, not the recipient
+        send = next(call for call in calls if call[0] == "send")
+        self.assertEqual(send[3], ["a@example.com", "b@example.com"])
+
+    def test_edition_overlay_changes_subject_and_recipients(self) -> None:
+        result = self._send(edition="animal")
+        self.assertEqual(result["subject"], "Animal Science Briefing - Sunday, October 25, 2026")
+        self.assertEqual(result["recipients"], ["owner@example.com", "reader2@example.com"])
+
+    def test_transient_failure_is_retried_with_backoff(self) -> None:
+        FakeSMTP.failures = [smtplib.SMTPServerDisconnected("boom"), TimeoutError("slow")]
+        result = self._send()
+        self.assertEqual(self.sleeps, [2.0, 4.0])
+        self.assertEqual(len(FakeSMTP.instances), 1)
+        self.assertEqual(result["recipient"], "owner@example.com")
+
+    def test_retries_are_bounded(self) -> None:
+        FakeSMTP.failures = [smtplib.SMTPServerDisconnected("down")] * 10
+        with self.assertRaises(SystemExit):
+            self._send(retries=2)
+        self.assertEqual(len(self.sleeps), 2)
+
+    def test_authentication_failure_is_not_retried(self) -> None:
+        class AuthFail(FakeSMTP):
+            def login(self, user, password):
+                raise smtplib.SMTPAuthenticationError(535, b"bad credentials")
+
+        with self.assertRaises(SystemExit) as caught:
+            self._send(smtp_factory=AuthFail)
+        self.assertIn("authentication failed", str(caught.exception))
+        self.assertEqual(self.sleeps, [])
+
+    def test_receipt_makes_a_retried_run_idempotent(self) -> None:
+        first = self._send()
+        self.assertNotIn("duplicate_suppressed", first)
+        sent_before = len(FakeSMTP.instances)
+        second = self._send()
+        self.assertTrue(second["duplicate_suppressed"])
+        self.assertEqual(len(FakeSMTP.instances), sent_before)
+        self._send(force=True)
+        self.assertEqual(len(FakeSMTP.instances), sent_before + 1)
+
+    def test_new_recipient_is_not_suppressed_by_old_receipt(self) -> None:
+        self._send()
+        before = len(FakeSMTP.instances)
+        self._send(recipient="other@example.com")
+        self.assertEqual(len(FakeSMTP.instances), before + 1)
+
+    def test_tiny_pdf_is_rejected_before_any_network_use(self) -> None:
+        self.pdf.write_bytes(b"%PDF tiny")
+        with self.assertRaises(SystemExit):
+            self._send()
+        self.assertEqual(FakeSMTP.instances, [])
+
+    def test_html_body_is_sent_as_alternative(self) -> None:
+        self._send(body_html="<p>hello</p>", body_text="hello")
+        msg = next(call for call in FakeSMTP.instances[0].calls if call[0] == "send")[1]
+        types = [part.get_content_type() for part in msg.walk()]
+        self.assertIn("multipart/alternative", types)
+        self.assertIn("text/html", types)
+        self.assertIn("application/pdf", types)
 
 
 if __name__ == "__main__":

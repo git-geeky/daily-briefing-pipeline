@@ -49,6 +49,7 @@ audit_fixture.write_text(json.dumps({
 
 calls: dict[str, int] = {}
 prompts: dict[str, list[str]] = {}
+article_story_ids: list[str] = []
 state_flags = {"article_calls": 0}
 LIMIT_AFTER = int(os.environ.get("E2E_LIMIT_AFTER", "5"))
 
@@ -78,13 +79,26 @@ def script(request: llm.LLMRequest):
     if stage in {"article", "repair"}:
         if stage == "article":
             state_flags["article_calls"] += 1
+            article_story_ids.append(story_of(request.prompt)["story_id"])
+            if scenario == "deadline_midway" and state_flags["article_calls"] == 7:
+                clock["now"] = datetime(2026, 10, 26, 5, 0, tzinfo=timezone.utc)  # 14:00 JST, after the 11:30 deadline
             if scenario in {"limit_midway", "limit_partial"} and not second_pass and state_flags["article_calls"] > LIMIT_AFTER:
                 return llm.LLMResult(ok=False, error_kind="usage_limit", error_detail="You've hit your session limit · resets 4:30pm (Asia/Tokyo)",
                                      reset_hint=datetime(2026, 10, 26, 7, 30, tzinfo=timezone.utc).timestamp())
         story = story_of(request.prompt) if stage == "article" else {
-            "story_id": re.search(r"<!-- story: ([a-z0-9-]+)", request.prompt).group(1),
+            "story_id": re.search(r"<!-- story: ([a-z0-9-]+)", request.prompt.split("# Current article")[1]).group(1),
             "title": re.search(r"(?m)^## (.+)$", request.prompt.split("# Current article")[1]).group(1), "prior_story_id": None}
         sid = story["story_id"]
+        if scenario == "limit_in_repair" and stage == "repair" and not second_pass and sid == "fixture-story-2":
+            return llm.LLMResult(ok=False, error_kind="usage_limit", error_detail="You've hit your session limit · resets 4:30pm (Asia/Tokyo)",
+                                 reset_hint=datetime(2026, 10, 26, 7, 30, tzinfo=timezone.utc).timestamp())
+        if scenario == "limit_in_repair" and stage == "article" and sid == "fixture-story-2":
+            clean = fx.make_article(story, words=WORDS, source_lines=fx.default_sources(catalog))
+            return result_for(clean.replace("### Counterpoint Matrix", "### Misc"), corpus=clean)
+        if scenario == "terminal_failed" and sid == "fixture-story-2":
+            clean = fx.make_article(story, words=WORDS, source_lines=fx.default_sources(catalog))
+            return result_for(clean.replace("### Implications\n", '### Implications\n\nOne author told reporters, "this exact sentence was never published in any source anywhere".\n'),
+                              corpus=clean)
         if scenario == "skip_story" and stage == "article" and sid == "fixture-story-3":
             return result_for("SKIP: material_limited (only a press release exists)")
         clean = fx.make_article(story, words=WORDS, source_lines=fx.default_sources(catalog))
@@ -128,6 +142,7 @@ os.environ["ANIMAL_BRIEFING_RECIPIENTS"] = "a@example.com,b@example.com"
 now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)  # 05:00 JST on the briefing date
 if scenario == "past_deadline":
     now = datetime(2026, 10, 26, 5, 0, tzinfo=timezone.utc)  # 14:00 JST, after the 11:30 deadline
+clock = {"now": now}
 
 fetch_counter = {"n": 0}
 
@@ -143,9 +158,22 @@ class UniqueCommons(FakeFetcher):
 settings = {"models": {"review": {"model": "opus", "effort": "low", "optional": True}}}
 conductor = cc.Conductor(
     edition=edition, date=DATE, scripts_dir=SCRIPTS, backend=llm.FakeBackend(script), photo_fetcher=UniqueCommons(),
-    check_network=False, audit_fixture=audit_fixture, now=lambda: now, sleep=lambda s: None, settings_override=settings,
+    check_network=False, audit_fixture=audit_fixture, now=lambda: clock["now"], sleep=lambda s: None, settings_override=settings,
 )
-if scenario == "interrupted" and not second_pass:
+if scenario == "crash_early":
+    def _boom(self):
+        raise RuntimeError("simulated crash before any article")
+
+    cc.Conductor.stage_photos = _boom
+if scenario == "crash_late" and not second_pass:
+    def _boom_pdf(self):
+        raise RuntimeError("simulated crash while building the PDF")
+
+    cc.Conductor.stage_pdf = _boom_pdf
+if scenario == "busy":
+    conductor.lock.path.parent.mkdir(parents=True, exist_ok=True)
+    conductor.lock.path.write_text(json.dumps({"pid": os.getppid(), "started_epoch": __import__("time").time()}), encoding="utf-8")
+if scenario in {"interrupted", "terminal_failed"} and not second_pass:
     # Simulate a run that drafted everything and then died before the last mile (power loss, killed task).
     def _crash(self, *, degraded):
         raise cc.Deferred("simulated interruption before the last mile")
@@ -157,7 +185,7 @@ gen = Path(conductor.generated_dir)
 arch = Path(conductor.archive_dir)
 stem = conductor.ctx.profile.artifact_stem
 out = {
-    "exit": code, "calls": calls,
+    "exit": code, "calls": calls, "article_story_ids": article_story_ids,
     "articles_done": sorted(p.stem for p in conductor.articles_dir.glob("*.md") if not p.stem.endswith(".raw")),
     "pdf_exists": (gen / f"{stem}-{DATE}.pdf").exists(),
     "assembled_exists": (arch / f"{stem}-{DATE}.md").exists(),
@@ -170,6 +198,8 @@ out = {
     "events": [e["message"] for e in conductor.state.state["events"]][-25:],
     "repair_prompts": [p.split("# What failed")[1].split("# Instructions")[0] for p in prompts.get("repair", [])],
     "header_source": conductor.state.state["stages"].get("header", {}).get("source"),
+    "run_status": conductor.state.state["stages"].get("run", {}).get("status"),
+    "lock_left_behind": conductor.lock.path.exists(),
 }
 pdf = gen / f"{stem}-{DATE}.pdf"
 if pdf.exists():
@@ -184,6 +214,7 @@ out["assembled_text"] = assembled.read_text(encoding="utf-8")[:200000] if assemb
 import run_reporting  # noqa: E402
 
 usage = (run_reporting.load_run_report(DATE).get("usage") or {}).get("totals") or {}
+out["report_run_status"] = run_reporting.load_run_report(DATE).get("run_status")
 out["usage_calls"] = usage.get("calls")
 out["usage_cost"] = usage.get("cost_usd")
 out["accounting_errors"] = [e["message"] for e in conductor.state.state["events"] if "accounting failed" in e["message"]]

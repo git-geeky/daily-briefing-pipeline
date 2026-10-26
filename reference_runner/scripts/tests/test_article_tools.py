@@ -58,6 +58,11 @@ class NormalizeTests(unittest.TestCase):
         self.assertIn("doi:10.1234/abc.5 for details", text)
         self.assertIn("- Paper https://doi.org/10.1234/abc.5", text)
 
+    def test_bottom_line_and_confidence_become_separate_paragraphs(self) -> None:
+        raw = "## A title long enough to count\n\n**Bottom line:** the verdict.\n**Confidence:** Medium. Reasons.\n\ntext\n"
+        text, _ = tools.normalize_article(raw, {**STORY, "title": "A title long enough to count"})
+        self.assertIn("**Bottom line:** the verdict.\n\n**Confidence:** Medium. Reasons.", text)
+
     def test_no_heading_is_an_error(self) -> None:
         with self.assertRaises(ValueError):
             tools.normalize_article("just prose, no heading at all", STORY)

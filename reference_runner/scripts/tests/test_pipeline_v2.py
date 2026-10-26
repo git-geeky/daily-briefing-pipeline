@@ -326,6 +326,21 @@ class DeliveryTests(unittest.TestCase):
         self._send(force=True)
         self.assertEqual(len(FakeSMTP.instances), sent_before + 1)
 
+    def test_a_rebuilt_pdf_with_different_bytes_does_not_cause_a_second_send(self) -> None:
+        self._send()
+        before = len(FakeSMTP.instances)
+        self.pdf.write_bytes(b"%PDF-1.4\n" + b"y" * (160 * 1024))  # a resumed run rebuilds the PDF; its bytes never match
+        second = self._send()
+        self.assertTrue(second["duplicate_suppressed"])
+        self.assertEqual(len(FakeSMTP.instances), before)
+
+    def test_another_day_or_edition_is_not_suppressed(self) -> None:
+        self._send()
+        before = len(FakeSMTP.instances)
+        self._send(date="2026-10-26")
+        self._send(edition="animal")
+        self.assertEqual(len(FakeSMTP.instances), before + 2)
+
     def test_new_recipient_is_not_suppressed_by_old_receipt(self) -> None:
         self._send()
         before = len(FakeSMTP.instances)

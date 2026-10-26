@@ -42,7 +42,8 @@ PROVIDER_PRIORITY = {"wikimedia": 3.0, "inaturalist": 2.0, "openverse": 1.0}
 AVOID_TITLE_RE = re.compile(
     r"\b(?:skeleton|skull|taxidermy|specimens?|drawing|illustration|painting|map|distribution map|range map|"
     r"stamp|coin|diagram|logo|flag|poster|cover|bookplate|engraving|lithograph|sketch|cartoon|icon|silhouette|"
-    r"tracks?|footprints?|scat|dung|pelt|museum|exhibit)\b",
+    r"tracks?|footprints?|scat|dung|pelt|museum|exhibit|lithographs?|plates?|woodcuts?|etchings?|watercolou?rs?|gouache|prints?|"
+    r"mezzotint|chromolithograph|frontispiece|manuscript)\b",
     re.IGNORECASE,
 )
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
@@ -72,6 +73,7 @@ class PhotoCandidate:
     description: str = ""
     categories: str = ""
     taxon: str = ""
+    year: int | None = None
     score: float = 0.0
     reject_reason: str | None = None
 
@@ -160,6 +162,8 @@ def search_wikimedia(fetcher: Fetcher, query: str, *, limit: int = 12) -> list[P
             description=strip_html(value("ImageDescription")),
             categories=categories,
         )
+        year_match = re.search(r"\b(1[5-9]\d\d|20\d\d)\b", str(value("DateTimeOriginal") or value("DateTime") or ""))
+        candidate.year = int(year_match.group(1)) if year_match else None
         if info.get("mime") not in {"image/jpeg", "image/webp"}:
             candidate.reject_reason = f"mime {info.get('mime')} is not a photograph format"
         elif not family:
@@ -249,6 +253,9 @@ def score_candidate(candidate: PhotoCandidate, *, species_tokens: set[str], allo
         if match.group(0).lower() not in allow_words:
             candidate.reject_reason = f"subject looks like non-photographic or off-subject material ({match.group(0)!r})"
             return -1.0
+    if candidate.year and candidate.year < 1960 and "historical" not in allow_words:
+        candidate.reject_reason = f"historic image ({candidate.year}); the briefing wants contemporary photographs"
+        return -1.0
     if candidate.width and candidate.width < min_width:
         candidate.reject_reason = f"too small ({candidate.width}px < {min_width}px)"
         return -1.0

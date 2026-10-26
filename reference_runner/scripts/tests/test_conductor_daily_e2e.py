@@ -54,6 +54,13 @@ class DailyConductorTests(unittest.TestCase):
         self.assertEqual(result["accounting_errors"], [])
         self.assertEqual(result["usage_calls"], sum(result["calls"].values()))
 
+    def test_a_hard_news_article_with_one_counterpoint_row_is_repaired_before_the_final_lint_can_fail_the_briefing(self) -> None:
+        result = run_daily("single_counterpoint_row", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertEqual(result["calls"]["repair"], 1)
+        self.assertIn("Counterpoint Matrix has 1 row", result["repair_findings"][0])
+        self.assertEqual(result["validation"]["blocking_errors"], [])
+
     def test_a_section_below_its_minimum_ships_a_visible_gap_not_padding(self) -> None:
         result = run_daily("short_section", self.fresh())
         self.assertEqual(result["exit"], 10, result["events"])  # delivered, but flagged as degraded

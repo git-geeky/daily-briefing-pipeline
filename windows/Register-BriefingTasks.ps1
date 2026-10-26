@@ -9,6 +9,13 @@
                                     after a usage-limit deferral the next repetition resumes the run.
       * Briefing-<Edition>-Watchdog daily at -WatchdogAt: assembles and delivers whatever exists, or
                                     raises an alert, so a missing briefing can never be silent.
+
+    Defaults per edition (override with the parameters; keep the watchdog after the conductor's
+    deadline_local in editions/<edition>.json):
+        animal  06:30 start, repeats until 11:30, watchdog 11:45   (deadline 11:30)
+        daily   12:30 start, repeats until 17:30, watchdog 17:45   (deadline 17:30)
+    The two editions are staggered so they do not share one five-hour usage window.
+
     Tasks are created DISABLED unless -Enable is passed. The legacy \ClaudeCode\Claude-DailyBriefing
     task is left alone (it is disabled); do not enable both.
 
@@ -22,20 +29,28 @@
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [ValidateSet('animal', 'daily')][string]$Edition = 'animal',
-    [string]$StartAt = '06:30',
-    [string]$WatchdogAt = '11:45',
+    [string]$StartAt = '',
+    [string]$WatchdogAt = '',
     [int]$RepeatMinutes = 30,
-    [int]$RepeatHours = 5,
+    [int]$RepeatHours = 0,
     [switch]$Enable
 )
 
 $ErrorActionPreference = 'Stop'
+$defaults = @{
+    animal = @{ Start = '06:30'; Watchdog = '11:45'; Hours = 5 }
+    daily  = @{ Start = '12:30'; Watchdog = '17:45'; Hours = 5 }
+}
+if (-not $StartAt)    { $StartAt    = $defaults[$Edition].Start }
+if (-not $WatchdogAt) { $WatchdogAt = $defaults[$Edition].Watchdog }
+if ($RepeatHours -le 0) { $RepeatHours = $defaults[$Edition].Hours }
+
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $launcher = Join-Path $here 'Run-Briefing.ps1'
 $vbs = Join-Path $env:USERPROFILE 'bin\run-ps-hidden.vbs'   # same hidden-window shim the existing tasks use
 if (-not (Test-Path -LiteralPath $vbs)) { throw "Hidden launcher shim not found: $vbs" }
 
-function New-BriefingTask([string]$Name, [string]$Arguments, [string]$At, [switch]$Repeat) {
+function New-BriefingTask([string]$Name, [string]$Arguments, [string]$At, [int]$LimitHours, [switch]$Repeat) {
     $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "`"$vbs`" `"$launcher`" $Arguments"
     $trigger = New-ScheduledTaskTrigger -Daily -At $At
     if ($Repeat) {
@@ -43,7 +58,7 @@ function New-BriefingTask([string]$Name, [string]$Arguments, [string]$At, [switc
         $trigger.Repetition = $rep
     }
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-        -ExecutionTimeLimit (New-TimeSpan -Hours 4) -MultipleInstancesPolicy IgnoreNew
+        -ExecutionTimeLimit (New-TimeSpan -Hours $LimitHours) -MultipleInstances IgnoreNew
     if (-not $Enable) { $settings.Enabled = $false }
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
     if ($PSCmdlet.ShouldProcess("\Briefing\$Name", "Register ($Arguments at $At)")) {
@@ -52,5 +67,5 @@ function New-BriefingTask([string]$Name, [string]$Arguments, [string]$At, [switc
     }
 }
 
-New-BriefingTask -Name "Briefing-$Edition" -Arguments "-Edition $Edition" -At $StartAt -Repeat
-New-BriefingTask -Name "Briefing-$Edition-Watchdog" -Arguments "-Edition $Edition -Finish" -At $WatchdogAt
+New-BriefingTask -Name "Briefing-$Edition" -Arguments "-Edition $Edition" -At $StartAt -LimitHours 4 -Repeat
+New-BriefingTask -Name "Briefing-$Edition-Watchdog" -Arguments "-Edition $Edition -Finish" -At $WatchdogAt -LimitHours 1

@@ -377,6 +377,7 @@ def record_usage(
     ok: bool = True,
     error: str | None = None,
     label: str | None = None,
+    cost_estimated: bool = False,
 ) -> dict[str, Any]:
     """Append one model call to the run report and refresh the usage rollups.
 
@@ -403,6 +404,7 @@ def record_usage(
             "duration_seconds": round(float(duration_seconds or 0.0), 1),
             "ok": bool(ok),
             "error": (error or None) and str(error)[:300],
+            **({"cost_estimated": True} if cost_estimated else {}),
         }
     )
     usage["calls"] = calls[-USAGE_CALL_LIMIT:]

@@ -5,5 +5,7 @@ lxml>=5.0
 Pillow>=10.0
 reportlab>=4.0
 pypdf>=4.0
+# Windows has no system time-zone database; zoneinfo (Asia/Tokyo deadlines, dates) needs this wheel there.
+tzdata>=2024.1; sys_platform == "win32"
 # Optional (adaptive_fetch TLS impersonation; never auto-installed in unattended runs):
 # curl_cffi

@@ -1213,6 +1213,9 @@ def evaluate_item_rules(
     prefix = f'{section}/{item["title"]}'
     if section in COUNTERPOINT_REQUIRED_SECTIONS and not item["has_counterpoint_matrix"]:
         blocking.append(f"{prefix}: missing Counterpoint Matrix")
+    elif section in HARD_NEWS_SECTIONS and item["has_counterpoint_matrix"] and int(item.get("counterpoint_row_count", 2) or 0) < 2:
+        # The research lint fails the whole briefing on this at the end; catching it per article lets the repair loop fix it first.
+        blocking.append(f"{prefix}: Counterpoint Matrix has {item.get('counterpoint_row_count')} row(s); hard-news articles need at least two")
     if section in WATCH_REQUIRED_SECTIONS and not item["watch_next_48h"]:
         blocking.append(f"{prefix}: missing {WATCH_LABEL} block")
     if not item["source_appendix_present"]:

@@ -111,12 +111,13 @@ class LLMResult:
     web_requests: int = 0
     reset_hint: float | None = None                         # epoch when a limit says it clears
     stderr_tail: str = ""
+    cost_estimated: bool = False                            # True when the CLI was killed before it reported a cost
 
     def usage_dict(self) -> dict[str, Any]:
         return {
             "model": self.model_used, "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
             "cache_read_tokens": self.cache_read_tokens, "cache_creation_tokens": self.cache_creation_tokens,
-            "cost_usd": self.cost_usd, "duration_seconds": self.duration_s,
+            "cost_usd": self.cost_usd, "duration_seconds": self.duration_s, "cost_estimated": self.cost_estimated,
         }
 
 
@@ -219,11 +220,27 @@ def _tool_result_text(block: dict) -> str:
     return ""
 
 
+# API-equivalent $ per million tokens (input, output). Deliberately on the high side: this prices only calls that were
+# killed before the CLI reported a cost, and an over-estimate makes the run-budget guard conservative, not reckless.
+_PRICE_PER_MTOK = {"opus": (15.0, 75.0), "sonnet": (3.0, 15.0), "haiku": (1.0, 5.0)}
+
+
+def estimate_cost_usd(model: str | None, *, input_tokens: int, output_tokens: int, cache_read: int = 0, cache_creation: int = 0) -> float:
+    family = next((name for name in _PRICE_PER_MTOK if name in (model or "").lower()), "sonnet")
+    price_in, price_out = _PRICE_PER_MTOK[family]
+    return round((input_tokens * price_in + cache_read * price_in * 0.1 + cache_creation * price_in * 1.25
+                  + output_tokens * price_out) / 1_000_000, 4)
+
+
 def parse_stream(lines: list[str], *, keep_corpus: bool = True) -> LLMResult:
-    """Fold a ``stream-json`` event list into an LLMResult (no failure classification yet)."""
+    """Fold a ``stream-json`` event list into an LLMResult (no failure classification yet).
+
+    When the stream ends without a ``result`` event (the process was killed on a timeout) the tokens of the
+    assistant messages seen so far are summed and priced, so that spend is not silently lost from the budget."""
     result = LLMResult(ok=False)
     final_event: dict | None = None
     assistant_text: list[str] = []
+    message_usage: dict[str, dict] = {}
     for raw in lines:
         raw = raw.strip()
         if not raw.startswith("{"):
@@ -249,6 +266,8 @@ def parse_stream(lines: list[str], *, keep_corpus: bool = True) -> LLMResult:
         elif kind == "assistant":
             message = event.get("message") or {}
             result.model_used = message.get("model") or result.model_used
+            if isinstance(message.get("usage"), dict):
+                message_usage[str(message.get("id") or f"anon-{len(message_usage)}")] = message["usage"]  # a message may stream repeatedly
             for block in message.get("content") or []:
                 if block.get("type") == "text" and block.get("text"):
                     assistant_text.append(block["text"])
@@ -287,6 +306,14 @@ def parse_stream(lines: list[str], *, keep_corpus: bool = True) -> LLMResult:
             result.error_detail = (text if isinstance(text, str) else "") or str(final_event.get("subtype") or "")
     else:
         result.text = "\n".join(assistant_text).strip()
+        if message_usage:
+            totals = {key: sum(int(u.get(key) or 0) for u in message_usage.values())
+                      for key in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")}
+            result.input_tokens, result.output_tokens = totals["input_tokens"], totals["output_tokens"]
+            result.cache_read_tokens, result.cache_creation_tokens = totals["cache_read_input_tokens"], totals["cache_creation_input_tokens"]
+            result.cost_usd = estimate_cost_usd(result.model_used, input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+                                                cache_read=result.cache_read_tokens, cache_creation=result.cache_creation_tokens)
+            result.cost_estimated = True
     return result
 
 
@@ -386,7 +413,15 @@ class ClaudeBackend:
             result.ok, result.error_kind, result.error_detail = False, "empty", "model returned no text"
             return result
         if not result.ok:
-            text_blob = " ".join([result.error_detail, result.stderr_tail, result.text])
+            # Classify only error text. The model's own prose ("...monthly spend limit...", "...rate limit...") in an AI-news
+            # article must never be mistaken for the platform's limit message and halt the run.
+            if result.error_detail:
+                evidence = [result.error_detail, result.stderr_tail]
+            else:
+                stray = [line for line in collected if not line.lstrip().startswith("{")]
+                last_prose = result.text if len(result.text) <= 300 else ""  # a short bare message, not an article
+                evidence = [result.stderr_tail, " ".join(stray)[-600:], last_prose]
+            text_blob = " ".join(evidence)
             result.error_kind = classify_failure(text_blob, result.terminal_reason)
             if result.terminal_reason in ("error_max_budget_usd", "max_budget_usd"):
                 result.error_kind = "budget"

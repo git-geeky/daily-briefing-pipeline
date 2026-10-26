@@ -161,6 +161,16 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result.error_kind, "usage_limit")
         self.assertIsNotNone(result.reset_hint)
 
+    def test_the_models_own_prose_about_limits_is_not_a_platform_limit(self) -> None:
+        """Review finding: an AI-news article mentioning a 'monthly spend limit' halted the run as a human-action failure."""
+        events = [
+            {"type": "assistant", "message": {"model": "m", "content": [{"type": "text", "text": "The vendor raised its monthly spend limit and the rate limit for enterprise tiers."}]}},
+            {"type": "result", "subtype": "error_max_turns", "is_error": True, "usage": {}},
+        ]
+        result, _ = self.run_with(FakeProc(lines_of(events)))
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error_kind, "error")
+
     def test_org_limit_needs_a_human(self) -> None:
         events = [{"type": "result", "subtype": "error_during_execution", "is_error": True,
                    "result": "You've hit your org's monthly usage limit", "usage": {}}]

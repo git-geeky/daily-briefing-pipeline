@@ -82,6 +82,8 @@ def normalize_article(raw: str, story: dict[str, Any]) -> tuple[str, list[str]]:
 
     text = _BOTTOM_RE.sub("**Bottom line:** ", text)
     text = _CONF_RE.sub("**Confidence:** ", text)
+    # Consecutive lines render as one paragraph in the PDF; the verdict and its confidence are separate blocks.
+    text = re.sub(r"(?m)^(\*\*Bottom line:\*\*[^\n]*)\n(?=\*\*Confidence:\*\*)", r"\1\n\n", text)
     text, link_fixes = _strip_body_links(text)
     if link_fixes:
         fixes.append(f"removed {link_fixes} link(s) from the body (URLs belong in Primary Sources / Watch Next)")

@@ -26,15 +26,20 @@ param(
 )
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+# 'Continue', not 'Stop': under Windows PowerShell 5.1 any text a native tool (scp, ssh, py) writes to stderr becomes a
+# terminating error and would abort a delivery that actually succeeded. Every native call below checks $LASTEXITCODE instead.
+$ErrorActionPreference = 'Continue'
 
 $briefingsRoot = Join-Path $env:USERPROFILE 'Documents\Daily-Briefings'
 $scriptsDir = if ($env:DAILY_BRIEFING_SCRIPTS_DIR) { $env:DAILY_BRIEFING_SCRIPTS_DIR } else { Join-Path $env:USERPROFILE '.claude\scheduled-tasks\daily-intelligence-briefing\scripts' }
+$scriptsDir = $scriptsDir.TrimEnd('\')   # a trailing backslash would break the raw Python string literals below
 $stem = if ($Edition -eq 'animal') { 'claude-animal-briefing' } else { 'claude-daily-briefing' }
 
 if (-not (Test-Path -LiteralPath $PdfPath)) { throw "PDF not found: $PdfPath" }
 $resolvedPdf = (Resolve-Path $PdfPath).Path
-if ((Split-Path $resolvedPdf -Leaf) -ne "$stem-$Date.pdf") { throw "Unexpected PDF name '$(Split-Path $resolvedPdf -Leaf)'; expected $stem-$Date.pdf" }
+$pdfLeaf = Split-Path $resolvedPdf -Leaf
+# The daily edition may ship the combined PDF (animal section first): claude-daily-briefing-<date>-combined.pdf.
+if (@("$stem-$Date.pdf", "$stem-$Date-combined.pdf") -notcontains $pdfLeaf) { throw "Unexpected PDF name '$pdfLeaf'; expected $stem-$Date.pdf (or $stem-$Date-combined.pdf)" }
 
 # Stage-order gate: validation passed, PDF built, visual QA done, source audit complete.
 $env:BRIEFING_EDITION = $Edition
@@ -75,7 +80,7 @@ function Copy-ToAiserver([string]$LocalPath, [string]$RemotePath) {
     }
 }
 
-$remotePdf  = "/tmp/$stem-$Date.pdf"
+$remotePdf  = "/tmp/$pdfLeaf"
 Copy-ToAiserver $resolvedPdf $remotePdf
 $extra = ''
 $remoteText = ''; $remoteHtml = ''
@@ -97,7 +102,8 @@ python3 /home/agent/briefing-pipeline/deliver_core.py \
     --runner claude \
     --edition '$Edition' \
     --date '$Date'$extra
-rm -f '$remotePdf' '$remoteText' '$remoteHtml'
+# Best effort: /tmp is sticky, so a leftover file owned by another user must not turn a sent briefing into a failure.
+rm -f '$remotePdf' '$remoteText' '$remoteHtml' || true
 "@
 Write-Host 'Delivering via aiserver'
 & $invokeRemoteBash -Target aiserver -RunAsUser agent -Script $script
@@ -114,5 +120,5 @@ run_reporting.update_run_report(r"$Date", run_status="failed", delivery_status="
 import sys
 sys.path.insert(0, r"$scriptsDir")
 import run_reporting
-run_reporting.update_run_report(r"$Date", run_status="completed", delivery_status="sent")
+run_reporting.update_run_report(r"$Date", delivery_status="sent")   # the conductor owns run_status (completed vs degraded)
 "@ | py -3 -

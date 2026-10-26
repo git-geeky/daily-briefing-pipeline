@@ -11,7 +11,7 @@ param(
 )
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'   # native stderr must not abort the script; native calls check $LASTEXITCODE
 if (-not (Test-Path -LiteralPath $BodyFile)) { throw "Alert body not found: $BodyFile" }
 if (-not (Get-Command Invoke-RemoteBash -ErrorAction SilentlyContinue)) {
     $toolsPath = Join-Path $HOME 'bin\codex-ssh-tools.ps1'
@@ -34,7 +34,7 @@ $safeSubject = $Subject -replace "'", "'\''"
 $script = @"
 set -euo pipefail
 python3 /home/agent/briefing-pipeline/deliver_core.py --runner diff --body-from-stdin --subject '$safeSubject' < '$remote'
-rm -f '$remote'
+rm -f '$remote' || true
 "@
 & $invokeRemoteBash -Target aiserver -RunAsUser agent -Script $script
 if ($LASTEXITCODE -ne 0) { throw "Alert delivery failed with exit code $LASTEXITCODE" }

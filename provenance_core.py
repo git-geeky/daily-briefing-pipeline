@@ -33,7 +33,7 @@ _NUMBER_RE = re.compile(
     re.I,
 )
 _SCALES = {"thousand": 1e3, "k": 1e3, "million": 1e6, "m": 1e6, "billion": 1e9, "bn": 1e9, "trillion": 1e12}
-_QUOTE_RE = re.compile(r"[\"“]([^\"”\n]{20,400})[\"”]")
+_QUOTE_RE = re.compile(r"[\"“]([^\"”]{20,})[\"”]")
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s)\]>\"'|,;]+[^\s)\]>\"'|,;.]")
 _URL_RE = re.compile(r"https?://[^\s)>\]]+")
 _SKIP_SECTIONS = ("primary sources", "watch next", "sources")
@@ -188,12 +188,30 @@ def corpus_number_set(corpus_text: str) -> set[str]:
     return numbers
 
 
+def _strip_blocks(markdown: str) -> str:
+    """Prose only (no images, markers, Primary Sources, Watch Next) but otherwise untouched: dates, numbers and URLs stay.
+
+    Quotations are checked on this text. The number extractor's date/URL blanking would turn a verbatim quote such as
+    "closes on 12 March 2026" into "closes on   " and report an invented quotation.
+    """
+    lines: list[str] = []
+    skipping = False
+    for line in markdown.splitlines():
+        if line.lstrip().startswith("#"):
+            skipping = line.lstrip("# ").strip().lower().rstrip(":* ").startswith(_SKIP_SECTIONS)
+        if skipping or line.lstrip().startswith(("![", "<!--")):
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def extract_quotes(markdown: str) -> list[str]:
-    text = _strip_non_prose(markdown)
+    text = re.sub(r"(?<!\n)\n(?!\n)", " ", _strip_blocks(markdown))  # a quotation may wrap across source lines
     quotes = []
     for match in _QUOTE_RE.finditer(text):
-        quote = match.group(1).strip()
-        if len(quote.split()) >= 6:
+        raw = match.group(1)
+        quote = re.sub(r"\s+", " ", raw).strip()
+        if len(quote.split()) >= 6 and "\n\n" not in raw:  # a span crossing a paragraph break is two quotations' worth of noise
             quotes.append(quote)
     return quotes
 

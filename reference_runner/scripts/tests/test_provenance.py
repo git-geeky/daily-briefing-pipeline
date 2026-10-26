@@ -83,6 +83,23 @@ class QuoteTests(unittest.TestCase):
         self.assertFalse(prov.quote_in_corpus("the population is declining rapidly ... nobody said this part at all", corpus))
 
 
+class QuoteRegressionTests(unittest.TestCase):
+    """Review finding: verbatim quotations containing a date were reported as invented."""
+
+    def test_verbatim_quote_with_a_date_or_month_word_matches(self) -> None:
+        source = ['"We will close the facility on 12 March 2026 as planned, and the remaining 12 may never return to service," the minister said.']
+        article = '## T\nThe minister said "We will close the facility on 12 March 2026 as planned, and the remaining 12 may never\nreturn to service," in a statement.\n'
+        report = prov.check_article(article, source, check_network=False)
+        self.assertEqual(report.quotes_checked, 1)
+        self.assertEqual(report.unmatched_quotes, [])
+
+    def test_long_and_wrapped_quotes_are_checked_not_skipped(self) -> None:
+        long_quote = " ".join(f"word{i}" for i in range(120))
+        report = prov.check_article(f'## T\nHe said "{long_quote}" at the hearing.\n', ["nothing relevant"], check_network=False)
+        self.assertEqual(report.quotes_checked, 1)
+        self.assertEqual(len(report.unmatched_quotes), 1)
+
+
 class CitationTests(unittest.TestCase):
     def test_doi_in_corpus_ok_missing_doi_not_found(self) -> None:
         report = prov.check_article(ARTICLE, CORPUS, json_fetcher=FakeCrossref(), url_checker=lambda url: 200)

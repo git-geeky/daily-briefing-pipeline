@@ -174,16 +174,34 @@ _SCI_NAME_RE = re.compile(r"^[A-Z][a-z]{2,}(?: [a-z]{3,}){1,2}$")
 
 
 def extract_json(text: str) -> Any:
-    """Parse the first JSON array/object in model output, tolerating fences and chatter."""
+    """Parse the model's JSON answer, tolerating fences and chatter.
+
+    The answer is the top-level value that looks like one: an object holding a ``stories`` list, or a non-empty list of
+    objects. A stray ``[1]`` or ``{}`` in the model's preamble is not mistaken for it; only when nothing looks like an
+    answer does the first decodable value win."""
     cleaned = re.sub(r"```(?:json)?", "", text or "")
     decoder = json.JSONDecoder()
-    for match in re.finditer(r"[\[{]", cleaned):
+    found: list[Any] = []
+    index = 0
+    while True:
+        match = re.compile(r"[\[{]").search(cleaned, index)
+        if not match:
+            break
         try:
-            value, _ = decoder.raw_decode(cleaned[match.start():])
+            value, length = decoder.raw_decode(cleaned[match.start():])
         except json.JSONDecodeError:
+            index = match.start() + 1
             continue
+        index = match.start() + length  # nested values inside this one are part of it, not separate candidates
         if isinstance(value, (list, dict)):
+            found.append(value)
+    for value in found:
+        if isinstance(value, dict) and isinstance(value.get("stories"), list):
             return value
+        if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
+            return value
+    if found:
+        return found[0]
     raise ValueError("no JSON found in model output")
 
 

@@ -193,7 +193,7 @@
     "digest_items": 0,
     "max_parallel_articles": 2,
     "timezone": "Asia/Tokyo",
-    "deadline_local": "13:00",
+    "deadline_local": "17:30",
     "review_enabled": false,
     "models": {
       "slate": {

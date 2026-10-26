@@ -34,7 +34,9 @@ Guarantees worth knowing:
 * **Honest depth.** Articles aim for 3,500 words (animal) only when distinct material exists; the three-band floors block below 1,500. A story that cannot honestly reach the floor is replaced from the backup list, never padded.
 * **Provenance gate.** Numbers, quotations, DOIs and URLs in each article are checked against what the writer actually fetched. Invented quotations and non-resolving DOIs trigger a targeted repair; if they survive, the story is replaced.
 * **Degrade, don't die.** With at least the minimum number of articles (animal 6, daily 12) the run ships a smaller briefing and says so in the email; sections below their minimum carry a visible `Quality Failure` block.
-* **Idempotent delivery.** `deliver_core.py` writes a receipt per PDF hash and recipient, so a repetition-trigger retry never double-sends.
+* **Idempotent delivery.** `deliver_core.py` writes one receipt per runner, edition and date (not per PDF hash: a resumed run rebuilds the PDF and its bytes differ), so a repetition-trigger retry, or a resume after an ambiguous send, never double-sends. `--force` re-sends deliberately.
+* **Paid work survives.** A drafted article is saved before its repair rounds, so a limit or crash during repair resumes into the repair, not back to a fresh draft. A story that failed its checks after full repair is marked terminal and not bought again on resume.
+* **A crash is an alert.** Any unexpected exception in the conductor, and any failure of the launcher itself, writes an alert file (and emails it when the alert command works) and still tries to ship what exists.
 
 ## 3. Where things live
 
@@ -55,14 +57,16 @@ Guarantees worth knowing:
 
 None of the Windows or aiserver steps could be executed from the cloud session that built this; run them in order and stop at the first surprise.
 
-1. **Get the code onto the machine.** Merge the branch; the existing 04:30 `sync-briefing-pipeline` task updates `Documents\Daily-Briefings\pipeline-shared` (or `git pull` it by hand).
-2. **Claude login and models.** `claude auth status` must show the account. `ANTHROPIC_DEFAULT_OPUS_MODEL` still decides what `opus` means. The animal review uses `claude-fable-5-1` with an Opus fallback; Fable needs 30-day retention enabled and refuses some biology content, which is handled (the review is advisory and skippable).
-3. **aiserver.** Update `/home/agent/briefing-pipeline/deliver_core.py` to this version (adds `--edition`, `--body-text-file`, `--body-html-file`, multi-recipient, receipts, verified TLS, retries). Add to its `delivery-config.json`:
-   ```json
-   "editions": { "animal": { "subject_template": "The Animal Science Briefing - {human_date}" } }
+1. **Get the code onto the machine.** Merge the branch, then update the working copy the launcher runs from. The 04:30 `sync-briefing-pipeline` task is disabled in the exported task list, so do it by hand and confirm:
+   ```powershell
+   git -C "$env:USERPROFILE\Documents\Daily-Briefings\pipeline-shared" pull --ff-only
+   git -C "$env:USERPROFILE\Documents\Daily-Briefings\pipeline-shared" rev-parse --short HEAD
+   py -3 -m pip install -r "$env:USERPROFILE\Documents\Daily-Briefings\pipeline-shared\requirements.txt"
    ```
-   The app-password path stays as it is. Delivery must stay on this path (never the Gmail connector: wrong account).
-4. **Recipients.** Create `%USERPROFILE%\.briefing\animal-recipients.txt` with the owner's address and the animal-briefing recipient(s), comma- or newline-separated. Keep it out of git.
+   The pip step installs `tzdata`, which Windows needs for time zones (without it the conductor falls back to fixed offsets for Asia/Tokyo and UTC only). The launcher logs the pipeline revision at the start of every run.
+2. **Claude login and models.** `claude auth status` must show the account. `ANTHROPIC_DEFAULT_OPUS_MODEL` still decides what `opus` means. The animal review uses `claude-fable-5-1` with an Opus fallback; Fable needs 30-day retention enabled and refuses some biology content, which is handled (the review is advisory and skippable).
+3. **aiserver.** Update `/home/agent/briefing-pipeline/deliver_core.py` to this version (adds `--edition`, `--body-text-file`, `--body-html-file`, multi-recipient, per-edition-and-date receipts, verified TLS, retries). If the existing install imports `private_config.py`, copy that file next to it; this version also runs without it (no private overlay then). The conductor always passes `--subject` and, when a recipients file exists, `--recipient`, so no `editions.animal` block is required in `delivery-config.json`; if you add one, its `recipients` are only the fallback when no recipient is passed. The app-password path stays as it is. Delivery must stay on this path (never the Gmail connector: wrong account).
+4. **Recipients.** Create `%USERPROFILE%\.briefing\animal-recipients.txt` with the owner's address and the animal-briefing recipient(s), comma- or newline-separated. Optionally `daily-recipients.txt` the same way (otherwise the delivery config's default recipient applies). Keep both out of git.
 5. **Dry runs, in this order:**
    ```powershell
    .\windows\Run-Briefing.ps1 -Edition animal -WhatIf          # prints the command, writes nothing
@@ -70,7 +74,14 @@ None of the Windows or aiserver steps could be executed from the cloud session t
    .\windows\Run-Briefing.ps1 -Edition animal -NoDeliver        # real run, builds the PDF, sends nothing
    ```
    Read the PDF. Then send one for real: `.\windows\Run-Briefing.ps1 -Edition animal`.
-6. **Schedule.** `.\windows\Register-BriefingTasks.ps1 -Edition animal -WhatIf`, then with `-Enable`. It registers `\Briefing\Briefing-animal` (06:30, repeating every 30 minutes for 5 hours) and `...-Watchdog` (11:45, `--finish`). Repeat for `-Edition daily`.
+6. **Schedule.** `.\windows\Register-BriefingTasks.ps1 -Edition animal -WhatIf`, then with `-Enable`. Defaults per edition, in the machine's local time (all overridable):
+
+   | Edition | Start | Repeats | Conductor deadline | Watchdog (`--finish`) |
+   |---|---|---|---|---|
+   | animal | 06:30 | every 30 min until 11:30 | 11:30 | 11:45 |
+   | daily | 12:30 | every 30 min until 17:30 | 17:30 | 17:45 |
+
+   The editions are staggered so they never share one five-hour usage window. Keep each watchdog after its edition's `conductor.deadline_local`. Tasks are registered **disabled** unless `-Enable` is given; nothing runs until you enable them.
 7. **Retire duplicates.** The legacy `\ClaudeCode\Claude-DailyBriefing` task is already disabled; leave it. `briefing-runner-flags.json` currently has `use_codex_for_scheduled_tasks: true`: decide whether the Codex runner should keep sending a second daily briefing. The flags file only gates the legacy launchers, not the conductor.
 
 ## 5. Operating it
@@ -80,9 +91,11 @@ None of the Windows or aiserver steps could be executed from the cloud session t
 Get-Content "$env:USERPROFILE\Documents\Daily-Briefings\logs\last-run-animal.json"
 ```
 
-Exit codes: `0` delivered, `10` delivered with fewer stories or dropped articles (see the email notes), `75` deferred on a limit (the next repetition resumes), `20` failed (alert written), `30` disabled, `2` usage error.
+Exit codes: `0` delivered (also returned when today's briefing was already delivered), `10` delivered with fewer stories or dropped articles (see the email notes), `75` deferred on a transient window limit (the next repetition resumes), `76` another run for this edition and day is active (the repetition backs off), `20` failed (alert written; this includes the organisation monthly limit, a spend limit and a login problem, which need a human), `30` disabled (alerted), `2` usage error, `21` the launcher itself failed (alert written). The launcher also alerts on any code it does not know.
 
-To rerun a day from scratch, delete that day's `*-conductor.json` and the `*-articles-<date>` folder under `archive`. To redo one article, delete its `<story>.json` and `.md`. `--date YYYY-MM-DD` runs a past day.
+Resume semantics: every stage and every finished article is saved, so launching again continues. Unfinished drafts are kept as `<story>.draft.json` next to the article and continue into repair; stories that failed after full repair (`"terminal": true` in `<story>.json`) are not retried. A run that was killed leaves a lock file; the next launch takes it over at once if its process is gone (or after 240 minutes if it is still alive but hung).
+
+To rerun a day from scratch, delete that day's `*-conductor.json` and the `*-articles-<date>` folder under `archive`. To redo one article, delete its `<story>.json`, `<story>.draft.json` and `.md`. `-Date YYYY-MM-DD` (launcher) or `--date` (conductor) runs a past day; `-Diagnose` never touches the last-run record.
 
 ### Budget and limits
 
@@ -110,6 +123,9 @@ Extrapolation for a full animal run: about $5-7 and 35-45 minutes (audit 6 min, 
 |---|---|---|
 | Alert `org_limit` / `spend_limit` | Organisation monthly cap | A human must raise it at claude.ai/settings/usage; the next repetition resumes from saved state |
 | Alert `auth` | Not logged in / token expired | `claude auth login` on the desktop |
+| Alert `launcher-failed` / `unexpected-exit-N` | The launcher could not start the conductor (missing path, no `py`, Python crash) | Read the alert text and `logs\briefing-<edition>-*.log` |
+| Alert `crash` / `fail-crash` | Unexpected exception inside the conductor | The alert carries the traceback; the run already tried to ship what existed |
+| Alert `busy-past-deadline` | The watchdog found a live run past the deadline with nothing delivered | `-Diagnose`; if the process is truly hung, end it (the lock is then taken over) |
 | Deferred repeatedly all day | Five-hour/seven-day window used | Lower targets or parallelism; check `-Diagnose` for the utilisation at the last call |
 | `usage-policy block ... retrying on opus` in the log | Classifier false positive on a story | Automatic one-shot fallback; if it persists the story is replaced |
 | Article ends `skipped: material_limited` | Not enough distinct source material | Working as designed; a backup story is used |

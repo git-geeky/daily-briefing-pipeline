@@ -20,8 +20,8 @@ The `--runner` flag drives the subject-line label via `delivery-config.json`'s
 `runner_labels` map.
 
 Success indicator: the literal string `Email sent` on stdout (preserves the
-contract the Claude SKILL.md Step 5 originally required). A resend of an
-already-delivered PDF is suppressed by a receipt file and still prints
+contract the Claude SKILL.md Step 5 originally required). A resend for an
+already-delivered (runner, edition, date) is suppressed by a receipt file and still prints
 `Email sent` (with a note) so retried scheduled runs stay idempotent.
 
 Hardening over the original script: verified TLS context, bounded retries with
@@ -53,7 +53,12 @@ from typing import Callable, Iterable
 try:
     from private_config import load_json_with_private_overlay
 except ImportError:  # pragma: no cover - supports package-style imports
-    from .private_config import load_json_with_private_overlay
+    try:
+        from .private_config import load_json_with_private_overlay
+    except ImportError:  # the delivery host may hold only this file and its JSON config: no private overlay there
+
+        def load_json_with_private_overlay(path, overlay_key=None):  # type: ignore[misc]
+            return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "delivery-config.json"
@@ -173,8 +178,12 @@ def _smtp_send(
             sleep(delay)
 
 
-def _receipt_path(receipt_dir: Path, pdf_path: Path, sha256: str) -> Path:
-    return receipt_dir / f"{pdf_path.stem}.{sha256[:12]}.delivered.json"
+def _receipt_path(receipt_dir: Path, runner: str, edition: str | None, date: str) -> Path:
+    """One receipt per (runner, edition, date). Deliberately *not* keyed on the PDF's hash: the PDF is rebuilt on a resumed
+    run and its bytes differ every time, so a hash key lets an ambiguous first send (reply lost after the message went out)
+    be followed by a second, different-looking copy. ``--force`` is the override for a deliberate re-send."""
+    safe = lambda text: "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in str(text))  # noqa: E731
+    return receipt_dir / f"{safe(runner.lower())}.{safe(edition or 'default')}.{safe(date)}.delivered.json"
 
 
 def _resolve_receipt_dir(config: dict, override: Path | None) -> Path:
@@ -238,10 +247,10 @@ def send_briefing_email(
     print(f"PDF SHA256: {pdf_sha256}")
 
     receipts = _resolve_receipt_dir(config, receipt_dir)
-    receipt = _receipt_path(receipts, pdf_path, pdf_sha256)
+    receipt = _receipt_path(receipts, runner, edition, date)
     prior = None if force else _already_delivered(receipt, recipients)
     if prior:
-        print(f"Email sent (already delivered at {prior.get('delivered_at')}; duplicate send suppressed)")
+        print(f"Email sent (already delivered at {prior.get('delivered_at')}; duplicate send suppressed, pass --force to send again)")
         return {**prior, "duplicate_suppressed": True}
 
     app_password = _read_app_password(config)
@@ -348,7 +357,7 @@ def main() -> int:
     parser.add_argument("--body-text-file", type=Path, help="Plaintext body for a PDF send (replaces body_template).")
     parser.add_argument("--body-html-file", type=Path, help="HTML body for a PDF send (sent as multipart/alternative).")
     parser.add_argument("--receipt-dir", type=Path, help="Where delivery receipts live (default: ~/.briefing-delivery-receipts).")
-    parser.add_argument("--force", action="store_true", help="Send even if a receipt shows this PDF was already delivered.")
+    parser.add_argument("--force", action="store_true", help="Send even if a receipt shows this edition and date was already delivered.")
     parser.add_argument("--retries", type=int, default=3, help="Retries for transient SMTP errors (default 3).")
     parser.add_argument("--subject", help="Override the computed subject line.")
     parser.add_argument("--config", type=Path, help="Path to delivery-config.json (default: next to this script).")

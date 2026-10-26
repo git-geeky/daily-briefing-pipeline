@@ -50,6 +50,7 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertEqual(text.count("Image Quality Failure"), 0)
         # Token/cost accounting reached the run report for every model call, even with parallel writers.
         self.assertEqual(result["accounting_errors"], [])
+        self.assertEqual(result["report_run_status"], "completed")
         self.assertEqual(result["usage_calls"], sum(result["calls"].values()))
         self.assertAlmostEqual(result["usage_cost"], result["spent"], places=2)
         for stage in ("audit", "ingest", "slate", "photos", "articles", "header", "validate", "pdf", "visual_qa", "deliver"):
@@ -92,7 +93,10 @@ class ConductorE2ETests(unittest.TestCase):
 
     def test_past_the_deadline_optional_work_is_skipped_but_the_briefing_still_ships(self) -> None:
         result = run_harness("past_deadline", self.fresh())
-        self.assertEqual(result["exit"], 0, result["events"])
+        # Already past the deadline when the run starts: it drafts only until the minimum (6) is finished, then ships
+        # a smaller briefing (exit 10) instead of drifting on for hours.
+        self.assertEqual(result["exit"], 10, result["events"])
+        self.assertTrue(6 <= len(result["articles_done"]) <= 8, result["articles_done"])
         for stage in ("header", "digest", "review"):
             self.assertNotIn(stage, result["calls"])
         self.assertEqual(result["header_source"], "fallback")
@@ -145,7 +149,59 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertEqual(result["exit"], 10, result["events"])
         self.assertTrue(result["delivered"])
         self.assertEqual(len(result["articles_done"]), 7)
+        self.assertEqual(result["report_run_status"], "degraded", "a smaller briefing must not be recorded as a plain success")
         self.assertTrue(any("7 of 10" in n for n in result["notes"]), result["notes"])
+
+
+    def test_a_crash_before_any_article_is_alerted_not_swallowed(self) -> None:
+        result = run_harness("crash_early", self.fresh())
+        self.assertEqual(result["exit"], 20, result["events"])
+        self.assertEqual(result["run_status"], "crashed")
+        self.assertFalse(result["delivered"])
+        self.assertTrue(any("fail-crash" in a for a in result["alerts"]), result["alerts"])
+        self.assertFalse(result["lock_left_behind"], "a crashed run must release its lock")
+
+    def test_a_crash_in_the_last_mile_is_alerted_after_a_degraded_attempt(self) -> None:
+        result = run_harness("crash_late", self.fresh())
+        self.assertEqual(result["exit"], 20, result["events"])
+        self.assertEqual(len(result["articles_done"]), 10)
+        self.assertTrue(any("fail-finish" in a for a in result["alerts"]), result["alerts"])
+        self.assertTrue(any("degraded" in e for e in result["events"]), result["events"])
+
+    def test_a_second_run_while_the_first_is_alive_backs_off_with_the_busy_exit_code(self) -> None:
+        result = run_harness("busy", self.fresh())
+        self.assertEqual(result["exit"], 76, result["events"])
+        self.assertEqual(result["calls"], {})
+        self.assertTrue(result["lock_left_behind"], "the live run's lock must not be removed by the one that backed off")
+
+    def test_a_limit_during_repair_keeps_the_paid_draft_and_resumes_into_the_repair(self) -> None:
+        root = self.fresh()
+        first = run_harness("limit_in_repair", root)
+        self.assertEqual(first["exit"], 75, first["events"])
+        second = run_harness("limit_in_repair", root, "--second-pass")
+        self.assertEqual(second["exit"], 0, second["events"])
+        self.assertNotIn("fixture-story-2", second["article_story_ids"], "the first draft was paid for; it must not be bought again")
+        self.assertTrue(any("resuming from the saved draft" in e for e in second["events"]), second["events"])
+        self.assertEqual(second["calls"]["repair"], 1)
+        self.assertIn("fixture-story-2", second["articles_done"])
+
+    def test_a_story_that_failed_after_full_repair_is_not_bought_again_on_resume(self) -> None:
+        root = self.fresh()
+        first = run_harness("terminal_failed", root)
+        self.assertEqual(first["exit"], 75, first["events"])
+        self.assertNotIn("fixture-story-2", first["articles_done"])
+        second = run_harness("terminal_failed", root, "--second-pass")
+        self.assertEqual(second["exit"], 0, second["events"])
+        self.assertNotIn("fixture-story-2", second["article_story_ids"])
+        self.assertNotIn("repair", second["calls"])
+        self.assertEqual(len(second["articles_done"]), 10)
+
+    def test_past_the_deadline_no_new_articles_start_once_enough_are_finished(self) -> None:
+        result = run_harness("deadline_midway", self.fresh())
+        self.assertEqual(result["exit"], 10, result["events"])
+        self.assertTrue(result["delivered"])
+        self.assertLessEqual(result["calls"]["article"], 9, "drafting must stop at the deadline, not run the full queue")
+        self.assertGreaterEqual(len(result["articles_done"]), 6)
 
 
 class ConductorCliTests(unittest.TestCase):

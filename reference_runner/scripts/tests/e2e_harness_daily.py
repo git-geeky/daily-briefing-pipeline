@@ -62,10 +62,13 @@ def script(request: llm.LLMRequest):
                      "title": re.search(r'"title": "([^"]+)"', request.prompt).group(1),
                      "prior_story_id": (re.search(r'"prior_story_id": "([^"]+)"', request.prompt) or [None, None])[1]}
         else:
-            story = {"story_id": re.search(r"<!-- story: ([a-z0-9-]+)", request.prompt).group(1),
+            story = {"story_id": re.search(r"<!-- story: ([a-z0-9-]+)", request.prompt.split("# Current article")[1]).group(1),
                      "title": re.search(r"(?m)^## (.+)$", request.prompt.split("# Current article")[1]).group(1), "prior_story_id": None}
         section = story["story_id"].split("-story-")[0]
-        return ok(dfx.make_daily_article(story, section, words=WORDS))
+        text = dfx.make_daily_article(story, section, words=WORDS)
+        if scenario == "single_counterpoint_row" and stage == "article" and story["story_id"] == "part1-story-1":
+            text = "\n".join(line for line in text.splitlines() if not line.startswith("| The change is temporary"))
+        return ok(text)
     if stage == "header":
         pairs = re.findall(r'"title": "([^"]+)",\s*"bottom_line": "[^"]*",\s*"confidence": "[^"]*",\s*"group": "[^"]*",\s*"story_id": "[^"]*",\s*"region": "[^"]*",\s*"taxa": "[^"]*",\s*"part": "([^"]*)"', request.prompt)
         if not pairs:
@@ -115,6 +118,7 @@ out = {
     "stages": {k: v.get("status") for k, v in conductor.state.state["stages"].items() if not k.startswith("article:")},
     "short_sections": conductor.state.state["stages"].get("articles", {}).get("short_sections"),
     "notes": conductor.state.state.get("delivery_notes"), "events": [e["message"] for e in conductor.state.state["events"]][-30:],
+    "repair_findings": [p.split("# What failed")[1].split("# Instructions")[0] for p in prompts.get("repair", [])],
     "header_source": conductor.state.state["stages"].get("header", {}).get("source"),
     "closing_fallback": conductor.state.state["stages"].get("closing", {}).get("fallback"),
     "assembled_text": assembled.read_text(encoding="utf-8") if assembled.exists() else "",

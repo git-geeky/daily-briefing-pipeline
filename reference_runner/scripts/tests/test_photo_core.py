@@ -126,6 +126,19 @@ class PhotoStageTests(unittest.TestCase):
         for expected in ("licence not allowed", "too small", "non-photographic", "restrictions present", "mime image/png"):
             self.assertIn(expected, reasons)
 
+    def test_historic_illustrations_are_not_accepted_as_photographs(self) -> None:
+        page = commons_page("Myrmecobius fasciatus Gould.jpg", description="Myrmecobius fasciatus numbat", license_name="Public domain")
+        page["imageinfo"][0]["extmetadata"]["DateTimeOriginal"] = {"value": "1863"}
+        lithograph = commons_page("Numbat lithograph plate.jpg", description="Myrmecobius fasciatus numbat")
+        current = commons_page("Numbat in woodland.jpg", description="Myrmecobius fasciatus numbat in woodland")
+        current["imageinfo"][0]["extmetadata"]["DateTimeOriginal"] = {"value": "2019-08-02"}
+        report = self.run_stage(FakeFetcher(commons=[page, lithograph, current]),
+                                [{"story_id": "numbat", "photo_queries": ["Myrmecobius fasciatus", "numbat"]}])
+        self.assertEqual([d["page_url"].split("File:")[1][:12] for d in report["details"]], ["Numbat_in_wo"])
+        reasons = " | ".join(r["reason"] for r in report["stories"]["numbat"]["rejected"])
+        self.assertIn("historic image (1863)", reasons)
+        self.assertIn("non-photographic", reasons)
+
     def test_provider_outage_falls_through_to_next_provider(self) -> None:
         inat = [{
             "id": 99, "uri": "https://www.inaturalist.org/observations/99", "taxon": {"name": "Loxodonta africana", "preferred_common_name": "African savanna elephant"},

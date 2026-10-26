@@ -19,6 +19,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -308,7 +309,10 @@ class ClaudeBackend:
     def __init__(self, *, executable: str = "claude", safe_mode: bool = True, skip_permissions: bool = False,
                  env: dict[str, str] | None = None, popen: Callable[..., Any] = subprocess.Popen,
                  clock: Callable[[], float] = time.monotonic):
-        self.executable, self.safe_mode, self.skip_permissions = executable, safe_mode, skip_permissions
+        # Scheduled tasks often run with a thinner PATH than an interactive shell; honour an explicit
+        # BRIEFING_CLAUDE_EXE (set by the Windows launcher), else resolve through PATH/PATHEXT.
+        resolved = os.environ.get("BRIEFING_CLAUDE_EXE") or shutil.which(executable) or executable
+        self.executable, self.safe_mode, self.skip_permissions = resolved, safe_mode, skip_permissions
         self.env, self.popen, self.clock = env, popen, clock
 
     def run(self, request: LLMRequest) -> LLMResult:
@@ -316,13 +320,19 @@ class ClaudeBackend:
                                     skip_permissions=self.skip_permissions)
         started = self.clock()
         env = {**os.environ, **(self.env or {})}
+        if request.cwd:
+            try:  # a missing working directory raises FileNotFoundError from Popen, indistinguishable from a missing program
+                Path(request.cwd).mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
         try:
             process = self.popen(
                 argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 encoding="utf-8", errors="replace", env=env, cwd=request.cwd,
             )
-        except FileNotFoundError:
-            return LLMResult(ok=False, error_kind="error", error_detail=f"claude executable not found: {self.executable}")
+        except FileNotFoundError as exc:
+            return LLMResult(ok=False, error_kind="error",
+                             error_detail=f"could not start {self.executable!r} (cwd={request.cwd!r}): {exc}")
         lines: "queue.Queue[str | None]" = queue.Queue()
         stderr_chunks: list[str] = []
 

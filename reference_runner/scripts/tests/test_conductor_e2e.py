@@ -148,5 +148,34 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertTrue(any("7 of 10" in n for n in result["notes"]), result["notes"])
 
 
+class ConductorCliTests(unittest.TestCase):
+    def cli(self, *args: str, root: Path) -> subprocess.CompletedProcess:
+        env = {**os.environ, "DAILY_BRIEFING_ROOT": str(root), "DAILY_BRIEFING_SHARED_ROOT": str(REPO_ROOT)}
+        return subprocess.run([sys.executable, str(REPO_ROOT / "conductor_core.py"), *args, "--scripts-dir", str(HERE.parent)],
+                              capture_output=True, text=True, env=env, timeout=120)
+
+    def test_diagnose_prints_state_without_calling_any_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.cli("--edition", "animal", "--date", "2026-10-26", "--diagnose", root=Path(tmp))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("Run state for 2026-10-26 (animal)", done.stdout)
+
+    def test_unknown_edition_is_a_usage_error_with_the_available_ones_listed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.cli("--edition", "nonexistent", "--date", "2026-10-26", root=Path(tmp))
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("animal", done.stderr)
+
+    def test_disabled_pipeline_alerts_instead_of_exiting_silently(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {"BRIEFING_DISABLED": "1"}
+            full = {**os.environ, "DAILY_BRIEFING_ROOT": tmp, "DAILY_BRIEFING_SHARED_ROOT": str(REPO_ROOT), **env}
+            done = subprocess.run([sys.executable, str(REPO_ROOT / "conductor_core.py"), "--edition", "animal", "--date", "2026-10-26",
+                                   "--scripts-dir", str(HERE.parent)], capture_output=True, text=True, env=full, timeout=120)
+            alerts = list(Path(tmp).rglob("ALERT-*disabled*.txt"))
+        self.assertEqual(done.returncode, 30)
+        self.assertEqual(len(alerts), 1, "the legacy runner exited 0 silently when gated off; the conductor must leave a trace")
+
+
 if __name__ == "__main__":
     unittest.main()

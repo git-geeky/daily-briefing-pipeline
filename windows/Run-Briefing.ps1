@@ -60,6 +60,29 @@ $env:DAILY_BRIEFING_SCRIPTS_DIR  = $scriptsDir
 $env:PYTHONIOENCODING            = 'utf-8'
 $env:PYTHONUTF8                  = '1'
 
+# Resolve claude.exe the way Invoke-ClaudeTask.ps1 does (the scheduled-task PATH is thinner than a shell's).
+$nativeRoot = Join-Path $env:APPDATA 'Claude\claude-code'
+$nativeLatest = if (Test-Path $nativeRoot) {
+    Get-ChildItem $nativeRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' } |
+        Sort-Object { [version]$_.Name } | Select-Object -Last 1
+} else { $null }
+$claudeOnPath = Get-Command claude.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+$claudeCandidates = @(
+    $(if ($claudeOnPath) { $claudeOnPath.Path }),
+    "$env:USERPROFILE\bin\claude.exe",
+    $(if ($nativeLatest) { Join-Path $nativeLatest.FullName 'claude.exe' }),
+    "$env:USERPROFILE\.local\bin\claude.exe",
+    "$env:LOCALAPPDATA\Microsoft\WinGet\Links\claude.exe"
+)
+$claudeExe = $claudeCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if (-not $claudeExe) { throw "claude.exe not found. Checked: $($claudeCandidates -join ', ')" }
+$env:BRIEFING_CLAUDE_EXE = $claudeExe
+# `opus` resolves through the *User* environment variable; scheduled tasks do not always inherit it.
+foreach ($name in 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL') {
+    $value = [Environment]::GetEnvironmentVariable($name, 'User')
+    if ($value) { Set-Item -Path "Env:$name" -Value $value }
+}
+
 # Delivery goes through the one authorised path: PDF -> scp -> aiserver deliver_core.py (SMTP app password).
 $deliverScript = Join-Path $here 'deliver-edition-via-aiserver.ps1'
 $alertScript   = Join-Path $here 'send-alert-via-aiserver.ps1'
@@ -88,6 +111,7 @@ $log   = Join-Path $logDir "briefing-$Edition-$stamp.log"
 
 if ($WhatIf) {
     Write-Host "Would run: py -3 $($argsList -join ' ')"
+    Write-Host "claude   : $claudeExe"
     Write-Host "Log file : $log"
     Write-Host "Recipients file present: $(Test-Path -LiteralPath $recipientFile)"
     exit 0

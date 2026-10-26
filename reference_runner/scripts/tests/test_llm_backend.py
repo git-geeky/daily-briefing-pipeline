@@ -185,13 +185,45 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result.error_kind, "timeout")
         self.assertTrue(proc.killed.is_set())
 
-    def test_missing_executable(self) -> None:
+    def test_missing_executable_reports_what_failed_to_start(self) -> None:
         def boom(*a, **k):
-            raise FileNotFoundError()
+            raise FileNotFoundError("No such file or directory: 'claude'")
 
         result = backend.ClaudeBackend(popen=boom).run(backend.LLMRequest(stage="t", prompt="x"))
         self.assertFalse(result.ok)
-        self.assertIn("not found", result.error_detail)
+        self.assertIn("could not start", result.error_detail)
+        self.assertIn("No such file", result.error_detail)
+
+    def test_missing_working_directory_is_created_not_misreported(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "does" / "not" / "exist"
+            seen = {}
+
+            def fake_popen(*a, **k):
+                seen["cwd_exists"] = Path(k["cwd"]).is_dir()
+                return FakeProc(lines_of(SUCCESS_STREAM))
+
+            result = backend.ClaudeBackend(popen=fake_popen).run(backend.LLMRequest(stage="t", prompt="x", cwd=str(target)))
+        self.assertTrue(result.ok)
+        self.assertTrue(seen["cwd_exists"])
+
+
+class ExecutableResolutionTests(unittest.TestCase):
+    def test_explicit_env_override_wins_then_path_lookup_then_the_bare_name(self) -> None:
+        import os
+
+        previous = os.environ.pop("BRIEFING_CLAUDE_EXE", None)
+        try:
+            os.environ["BRIEFING_CLAUDE_EXE"] = r"C:\Users\admin\bin\claude.exe"
+            self.assertEqual(backend.ClaudeBackend().executable, r"C:\Users\admin\bin\claude.exe")
+            del os.environ["BRIEFING_CLAUDE_EXE"]
+            self.assertEqual(backend.ClaudeBackend(executable="definitely-not-installed-xyz").executable, "definitely-not-installed-xyz")
+        finally:
+            os.environ.pop("BRIEFING_CLAUDE_EXE", None)
+            if previous is not None:
+                os.environ["BRIEFING_CLAUDE_EXE"] = previous
 
 
 class CodexCommandTests(unittest.TestCase):

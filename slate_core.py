@@ -106,7 +106,7 @@ def build_ingest(
     stats = {"sources_with_items": 0, "raw_items": 0, "dropped_nav": 0, "dropped_irrelevant": 0, "dropped_banned": 0, "dropped_duplicate": 0}
     seen_urls: set[str] = set()
     seen_titles: list[str] = []
-    keyword_re = re.compile("|".join(re.escape(k) for k in keywords), re.I)
+    keyword_re = re.compile("|".join(re.escape(k) for k in keywords), re.I) if keywords else None  # no keywords: keep every headline
     for source in audit.get("sources", []):
         headlines = source.get("items") or []
         if not headlines or str(source.get("status")) not in SUCCESS_STATUSES:
@@ -124,8 +124,8 @@ def build_ingest(
             if len(title) < 12 or _NAV_TITLES.match(title) or not url:
                 stats["dropped_nav"] += 1
                 continue
-            hits = len(keyword_re.findall(title))
-            if not hits and not is_animal_source:
+            hits = len(keyword_re.findall(title)) if keyword_re else 0
+            if keyword_re and not hits and not is_animal_source:
                 stats["dropped_irrelevant"] += 1
                 continue
             if banned_check and banned_check(title):

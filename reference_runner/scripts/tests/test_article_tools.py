@@ -153,6 +153,25 @@ print(json.dumps(result))
 '''
 
 
+class HeadingCanonicalisationTests(unittest.TestCase):
+    """Live-run finding: 'Source bias' was renamed 'Primary Sources' (a prefix match), giving two of them."""
+
+    def normalize(self, heading: str) -> str:
+        article = f"## T\n<!-- story: s -->\n\n**Bottom line:** x\n\n### {heading}\n\nbody text here\n"
+        text, _ = tools.normalize_article(article, {"story_id": "s", "title": "T", "prior_story_id": None})
+        return [line for line in text.splitlines() if line.startswith("### ")][0]
+
+    def test_headings_that_merely_start_with_a_known_word_are_left_alone(self) -> None:
+        for heading in ("Source bias", "Source bias and the other side", "Sources of uncertainty", "Counterpoint view", "References to earlier work"):
+            self.assertEqual(self.normalize(heading), f"### {heading}", heading)
+
+    def test_genuine_aliases_are_still_canonicalised(self) -> None:
+        for heading, expected in (("Sources", "Primary Sources"), ("References", "Primary Sources"), ("Source list", "Primary Sources"),
+                                  ("Primary Source", "Primary Sources"), ("Sources (JST)", "Primary Sources"), ("Counterpoint", "Counterpoint Matrix"),
+                                  ("Counterpoints", "Counterpoint Matrix"), ("Counterpoint matrix", "Counterpoint Matrix")):
+            self.assertEqual(self.normalize(heading), f"### {expected}", heading)
+
+
 class AnimalValidatorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

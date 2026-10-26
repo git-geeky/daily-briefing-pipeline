@@ -746,7 +746,9 @@ class Conductor:
                 entry = payload.get(str(source.get("catalog_number")))
                 if entry:
                     meta[str(source.get("source_id"))] = entry
-        keywords = tuple(self.edition.get("ingest.keywords") or slate_core.DEFAULT_KEYWORDS)
+        configured = self.edition.get("ingest.keywords")
+        # "default" is the animal term list; an edition with no list (the daily briefing covers everything) keeps every headline.
+        keywords = tuple(slate_core.DEFAULT_KEYWORDS) if configured == "default" else tuple(configured or ())
         ingest = slate_core.build_ingest(
             audit, now=self.now(), prior_titles=self.prior_titles(), keywords=keywords, meta_by_source=meta,
             banned_check=lambda title: briefing_manifest.find_banned_topics(title, ""))

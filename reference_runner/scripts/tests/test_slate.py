@@ -99,6 +99,18 @@ class ValidateTests(unittest.TestCase):
         raw = [entry("n", 1, sources=[{"url": "https://a.org/1", "lang": "es"}, {"url": "https://b.org/2", "lang": "en"}])]
         self.assertTrue(slate.validate_slate(raw).kept[0]["native_language"])
 
+    def test_an_edition_with_no_keyword_list_keeps_every_headline(self) -> None:
+        audit = {"sources": [{"source_id": "s1", "name": "Wire", "status": "checked_no_relevant_update", "items": [
+            {"title": "Parliament passes the budget after a late-night session", "url": "https://e.org/1", "published": "2026-10-25"},
+            {"title": "A wolf pack was photographed near the border crossing", "url": "https://e.org/2", "published": "2026-10-25"}]}]}
+        from datetime import datetime, timezone
+
+        now = datetime(2026, 10, 26, tzinfo=timezone.utc)
+        everything = slate.build_ingest(audit, now=now, keywords=())
+        self.assertEqual(everything["stats"]["kept"], 2)
+        animal_only = slate.build_ingest(audit, now=now)  # default animal terms
+        self.assertEqual(animal_only["stats"]["kept"], 1)
+
     def test_extract_json_tolerates_fences_and_chatter(self) -> None:
         self.assertEqual(slate.extract_json('Here you go:\n```json\n[{"a": 1}]\n```\nDone.'), [{"a": 1}])
         self.assertEqual(slate.extract_json('{"stories": []}'), {"stories": []})

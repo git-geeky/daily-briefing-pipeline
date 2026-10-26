@@ -8,6 +8,9 @@
     "label": "The Animal Science Briefing",
     "author": "Animal Science Report"
   },
+  "ingest": {
+    "keywords": "default"
+  },
   "sections": [
     "animals",
     "digest"

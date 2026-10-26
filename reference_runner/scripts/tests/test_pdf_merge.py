@@ -89,5 +89,33 @@ class CombineTests(unittest.TestCase):
             merge.combine_pdfs([], self.dir / "x.pdf", heading="H", date_human="D")
 
 
+class InlineMarkupTests(unittest.TestCase):
+    """Live-run finding: a mis-nested bold/italic in one source-list bullet cost the whole briefing its PDF."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        import sys
+
+        scripts = str(Path(__file__).resolve().parents[1])
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        import build_pdf
+
+        cls.build_pdf = build_pdf
+
+    def test_bold_wrapping_an_italic_that_ends_the_run_is_nested_properly(self) -> None:
+        self.assertEqual(self.build_pdf.md_inline("**Teeling et al. (2005), *Science***").replace("<i></i>", ""),
+                         "<b>Teeling et al. (2005), <i>Science</i></b>")
+
+    def test_stray_and_unclosed_tags_are_repaired(self) -> None:
+        self.assertEqual(self.build_pdf.balance_inline_tags("</b>stray <i>open"), "stray <i>open</i>")
+
+    def test_a_paragraph_with_broken_markup_falls_back_to_plain_text_instead_of_raising(self) -> None:
+        from reportlab.lib.styles import getSampleStyleSheet
+
+        paragraph = self.build_pdf.Paragraph("<b>x<i>y</b></i>", getSampleStyleSheet()["Normal"])
+        self.assertIn("xy", paragraph.getPlainText())
+
+
 if __name__ == "__main__":
     unittest.main()

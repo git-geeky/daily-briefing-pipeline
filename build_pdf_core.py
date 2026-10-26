@@ -67,6 +67,18 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, PageBreak, HRFlowable,
     Table, TableStyle, KeepTogether, Image as RLImage
 )
+_ReportlabParagraph = Paragraph
+
+
+def Paragraph(text, style, *args, **kwargs):  # noqa: N802 - deliberately shadows the reportlab class
+    """A malformed inline tag must cost one paragraph its formatting, never the whole briefing (a live run lost its PDF to
+    a mis-nested <b>/<i> in one source-list bullet)."""
+    try:
+        return _ReportlabParagraph(text, style, *args, **kwargs)
+    except ValueError:
+        return _ReportlabParagraph(re.sub(r"<[^>]+>", "", str(text)), style, *args, **kwargs)
+
+
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase.pdfmetrics import registerFontFamily
@@ -752,9 +764,45 @@ def md_inline(text):
     text = re.sub(r'`([^`]+)`', r'<b>\1</b>', text)
     # Links — just show text
     text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    text = balance_inline_tags(text)
     if JP_FONT:
         text = wrap_unicode_font_runs(text)
     return text
+
+
+_INLINE_TAG_RE = re.compile(r"</?(b|i|u)>")
+
+
+def balance_inline_tags(text: str) -> str:
+    """Make <b>/<i>/<u> properly nested. ``**Teeling et al. (2005), *Science***`` converts to ``<b>..<i>Science</b></i>``, which
+    reportlab rejects; closing and reopening the inner tag renders it as intended."""
+    out: list[str] = []
+    stack: list[str] = []
+    position = 0
+    for match in _INLINE_TAG_RE.finditer(text):
+        out.append(text[position:match.start()])
+        position = match.end()
+        tag = match.group(1)
+        if not match.group(0).startswith("</"):
+            stack.append(tag)
+            out.append(f"<{tag}>")
+            continue
+        if tag not in stack:
+            continue  # a stray closing tag
+        reopen: list[str] = []
+        while stack[-1] != tag:
+            inner = stack.pop()
+            out.append(f"</{inner}>")
+            reopen.append(inner)
+        stack.pop()
+        out.append(f"</{tag}>")
+        for inner in reversed(reopen):
+            stack.append(inner)
+            out.append(f"<{inner}>")
+    out.append(text[position:])
+    while stack:
+        out.append(f"</{stack.pop()}>")
+    return "".join(out)
 
 
 def wrap_unicode_font_runs(text: str) -> str:

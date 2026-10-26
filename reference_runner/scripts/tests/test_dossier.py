@@ -99,6 +99,12 @@ class FetchSourceTests(unittest.TestCase):
         self.assertEqual((doc.status, doc.kind), ("ok", "pdf"))
         self.assertIn("73.5 percent", doc.text)
 
+    def test_a_pdf_url_that_returns_an_html_block_page_is_read_as_html_not_as_a_broken_pdf(self) -> None:
+        page = "<!DOCTYPE html><html><body><article><p>" + "Access to the full text requires a subscription or an institutional login. " * 6 + "</p></article></body></html>"
+        web = FakeWeb({"https://e.org/paper.pdf": (page.encode(), "application/pdf")})
+        doc = dos.fetch_source("https://e.org/paper.pdf", web, max_chars=9000)
+        self.assertEqual((doc.status, doc.kind), ("ok", "html"))
+
     def test_blocked_and_dead_sources_are_recorded_not_raised(self) -> None:
         web = FakeWeb({"https://e.org/b": RuntimeError("GET https://e.org/b failed: HTTPError('403 Client Error: Forbidden')")})
         blocked = dos.fetch_source("https://e.org/b", web, max_chars=9000)

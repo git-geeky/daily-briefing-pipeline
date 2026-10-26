@@ -25,9 +25,11 @@ _DOI_URL_RE = re.compile(r"https?://(?:dx\.)?doi\.org/(10\.[^\s)\]>]+)", re.I)
 _BARE_URL_RE = re.compile(r"\s*<?https?://[^\s)>\]]+>?")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 _CANONICAL_HEADINGS = (
-    (re.compile(r"^counterpoint\b", re.I), "Counterpoint Matrix"),
+    # Whole-heading matches only. A prefix match renamed "Source bias" to "Primary Sources" and produced two of them, which
+    # made the validator read the empty one (a live daily run lost eleven articles to this).
+    (re.compile(r"^counterpoints?(?:\s+(?:matrix|table))?$", re.I), "Counterpoint Matrix"),
     (re.compile(r"^watch\s+next\b", re.I), None),  # keep the writer's suffix ("Watch Next (30 days)")
-    (re.compile(r"^(?:primary\s+sources?|sources?|references?|bibliography|source\s+list)\b", re.I), "Primary Sources"),
+    (re.compile(r"^(?:primary\s+sources?|sources?|references?|bibliography|source\s+list)\s*(?:\([^)]*\))?$", re.I), "Primary Sources"),
 )
 _BOTTOM_RE = re.compile(r"(?im)^[ \t>]*\*{0,2}\s*bottom line\s*:?\s*\*{0,2}\s*:?\s*")
 _CONF_RE = re.compile(r"(?im)^[ \t>]*\*{0,2}\s*confidence\s*:?\s*\*{0,2}\s*:?\s*")

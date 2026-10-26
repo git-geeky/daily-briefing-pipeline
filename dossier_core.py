@@ -236,7 +236,8 @@ def fetch_source(url: str, fetcher: WebFetcher, *, max_chars: int, max_bytes: in
         return doc
     content_type = (content_type or "").lower()
     try:
-        if "pdf" in content_type or data[:5] == b"%PDF-" or url.lower().split("?")[0].endswith(".pdf"):
+        looks_html = data.lstrip()[:15].lower().startswith((b"<!doctype", b"<html"))
+        if data[:5] == b"%PDF-" or (("pdf" in content_type or url.lower().split("?")[0].endswith(".pdf")) and not looks_html):
             doc.kind, text = "pdf", pdf_to_text(data)
         elif "html" in content_type or "xml" in content_type or data.lstrip()[:15].lower().startswith((b"<!doctype", b"<html")) or not content_type:
             doc.kind = "html"

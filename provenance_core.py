@@ -54,6 +54,7 @@ class ProvenanceReport:
     unmatched_numbers: list[dict] = field(default_factory=list)
     quotes_checked: int = 0
     unmatched_quotes: list[str] = field(default_factory=list)
+    translated_quotes: list[str] = field(default_factory=list)   # marked as the writer's translation: not verifiable verbatim
     dois: dict[str, dict] = field(default_factory=dict)
     dead_urls: list[dict] = field(default_factory=list)
     unknown_urls: list[str] = field(default_factory=list)
@@ -81,6 +82,7 @@ class ProvenanceReport:
             "numbers_checked": self.numbers_checked, "numbers_matched": self.numbers_matched,
             "unmatched_ratio": round(self.unmatched_ratio, 3), "unmatched_numbers": self.unmatched_numbers[:60],
             "quotes_checked": self.quotes_checked, "unmatched_quotes": self.unmatched_quotes[:20],
+            "translated_quotes": len(self.translated_quotes),
             "dois": self.dois, "dead_urls": self.dead_urls, "unknown_urls": self.unknown_urls[:40],
             "corpus_chars": self.corpus_chars,
         }
@@ -205,15 +207,29 @@ def _strip_blocks(markdown: str) -> str:
     return "\n".join(lines)
 
 
-def extract_quotes(markdown: str) -> list[str]:
+_TRANSLATION_CUE_RE = re.compile(r"(?i)\btranslat\w*")
+
+
+def classify_quotes(markdown: str) -> tuple[list[str], list[str]]:
+    """Split quotations into (verbatim, translated). A quotation that the writer marks as a translation (the spec asks for
+    native-language sources to be translated and marked) cannot match the fetched original verbatim, so it is exempt from
+    the verbatim check and reported separately; its figures are still number-checked like any other prose."""
     text = re.sub(r"(?<!\n)\n(?!\n)", " ", _strip_blocks(markdown))  # a quotation may wrap across source lines
-    quotes = []
+    verbatim: list[str] = []
+    translated: list[str] = []
     for match in _QUOTE_RE.finditer(text):
         raw = match.group(1)
         quote = re.sub(r"\s+", " ", raw).strip()
-        if len(quote.split()) >= 6 and "\n\n" not in raw:  # a span crossing a paragraph break is two quotations' worth of noise
-            quotes.append(quote)
-    return quotes
+        if len(quote.split()) < 6 or "\n\n" in raw:  # a span crossing a paragraph break is two quotations' worth of noise
+            continue
+        around = text[max(0, match.start() - 60):match.start()] + " " + text[match.end():match.end() + 90]
+        (translated if _TRANSLATION_CUE_RE.search(around) else verbatim).append(quote)
+    return verbatim, translated
+
+
+def extract_quotes(markdown: str) -> list[str]:
+    verbatim, translated = classify_quotes(markdown)
+    return verbatim + translated
 
 
 def quote_in_corpus(quote: str, normalized_corpus: str) -> bool:
@@ -317,7 +333,8 @@ def check_article(
         else:
             report.unmatched_numbers.append({"text": claim.text, "context": claim.context})
 
-    for quote in extract_quotes(markdown):
+    verbatim, report.translated_quotes = classify_quotes(markdown)
+    for quote in verbatim:
         report.quotes_checked += 1
         if not quote_in_corpus(quote, normalized_corpus):
             report.unmatched_quotes.append(quote)

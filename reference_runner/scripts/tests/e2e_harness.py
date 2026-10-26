@@ -29,6 +29,7 @@ import conductor_core as cc  # noqa: E402
 import edition_core  # noqa: E402
 import llm_backend_core as llm  # noqa: E402
 import slate_core  # noqa: E402
+from test_dossier import FakeWeb, html_bytes  # noqa: E402
 from test_photo_core import FakeFetcher, commons_page  # noqa: E402
 
 edition = edition_core.load_edition("animal")
@@ -49,9 +50,14 @@ audit_fixture.write_text(json.dumps({
 
 calls: dict[str, int] = {}
 prompts: dict[str, list[str]] = {}
+digest_tools: list = []
 article_story_ids: list[str] = []
 state_flags = {"article_calls": 0}
 LIMIT_AFTER = int(os.environ.get("E2E_LIMIT_AFTER", "5"))
+
+
+def clean_for(story: dict) -> str:
+    return fx.make_article(story, words=WORDS, source_lines=fx.default_sources(catalog))
 
 
 def story_of(prompt: str) -> dict:
@@ -70,6 +76,8 @@ def script(request: llm.LLMRequest):
     stage = request.stage
     calls[stage] = calls.get(stage, 0) + 1
     prompts.setdefault(stage, []).append(request.prompt)
+    if stage == "digest":
+        digest_tools.append(request.tools)
     if stage == "probe":
         if scenario == "org_limit":
             return llm.LLMResult(ok=False, error_kind="org_limit", error_detail="You've hit your org's monthly usage limit")
@@ -95,6 +103,12 @@ def script(request: llm.LLMRequest):
         if scenario == "limit_in_repair" and stage == "article" and sid == "fixture-story-2":
             clean = fx.make_article(story, words=WORDS, source_lines=fx.default_sources(catalog))
             return result_for(clean.replace("### Counterpoint Matrix", "### Misc"), corpus=clean)
+        if scenario == "dossier_quote" and stage == "article" and sid == "fixture-story-2":
+            quoted = clean_for(story).replace("### Implications\n", '### Implications\n\nThe agency page states "the fixture population numbered 4,321 animals in the census year".\n')
+            return result_for(quoted, corpus="the model's own tool results hold nothing relevant")
+        if scenario == "taxonomy_typo" and stage == "article" and sid == "fixture-story-2":
+            return result_for(fx.make_article(story, words=WORDS, source_lines=fx.default_sources(catalog), binomial="Genus speceis"),
+                              corpus=clean_for(story))
         if scenario == "terminal_failed" and sid == "fixture-story-2":
             clean = fx.make_article(story, words=WORDS, source_lines=fx.default_sources(catalog))
             return result_for(clean.replace("### Implications\n", '### Implications\n\nOne author told reporters, "this exact sentence was never published in any source anywhere".\n'),
@@ -155,9 +169,32 @@ class UniqueCommons(FakeFetcher):
         return super().get_json(url, params)
 
 
-settings = {"models": {"review": {"model": "opus", "effort": "low", "optional": True}}}
+class FakeGbifWeb(FakeWeb):
+    """Serves the fixture slate's source pages and a GBIF that knows ``Genus species`` (VU) and spots the typo."""
+
+    def get_json(self, url, params=None):
+        if "/species/match" in url:
+            name = params["name"]
+            if name in {"Genus species", "Genus speceis"}:
+                exact = name == "Genus species"
+                return {"matchType": "EXACT" if exact else "FUZZY", "canonicalName": "Genus species", "status": "ACCEPTED", "rank": "SPECIES", "usageKey": 7}
+            return {"matchType": "NONE"}
+        if "iucnRedListCategory" in url:
+            return {"code": "VU", "category": "VULNERABLE"}
+        raise RuntimeError("no fixture")
+
+
+web_fetcher = None
+if scenario in {"dossier", "dossier_quote", "taxonomy_typo"}:
+    page = ("<html><head><title>Fixture agency page</title></head><body><article><p>The fixture population numbered 4,321 animals in the census year, "
+            "according to the agency, and monitoring continued through the following survey season at all of the long-term plots. "
+            "The agency added that detection probability was modelled separately for every transect and that the full dataset is archived "
+            "in a public repository with the analysis scripts.</p></article></body></html>")
+    web_fetcher = FakeGbifWeb({f"https://example.org/{kind}-{i}": html_bytes(page) for i in range(14) for kind in ("paper", "agency")})
+
+settings = {"review_enabled": True, "models": {"review": {"model": "opus", "effort": "low", "optional": True}}}
 conductor = cc.Conductor(
-    edition=edition, date=DATE, scripts_dir=SCRIPTS, backend=llm.FakeBackend(script), photo_fetcher=UniqueCommons(),
+    edition=edition, date=DATE, scripts_dir=SCRIPTS, backend=llm.FakeBackend(script), photo_fetcher=UniqueCommons(), web_fetcher=web_fetcher,
     check_network=False, audit_fixture=audit_fixture, now=lambda: clock["now"], sleep=lambda s: None, settings_override=settings,
 )
 if scenario == "crash_early":
@@ -199,6 +236,11 @@ out = {
     "repair_prompts": [p.split("# What failed")[1].split("# Instructions")[0] for p in prompts.get("repair", [])],
     "header_source": conductor.state.state["stages"].get("header", {}).get("source"),
     "run_status": conductor.state.state["stages"].get("run", {}).get("status"),
+    "digest_tools": digest_tools,
+    "article_prompts": prompts.get("article", [])[:3],
+    "dossier_files": sorted(p.name for p in conductor.articles_dir.glob("*.dossier*.json")),
+    "taxonomy_meta": json.loads((conductor.articles_dir / "fixture-story-2.json").read_text()).get("provenance", {}).get("taxonomy")
+    if (conductor.articles_dir / "fixture-story-2.json").exists() else None,
     "lock_left_behind": conductor.lock.path.exists(),
 }
 pdf = gen / f"{stem}-{DATE}.pdf"

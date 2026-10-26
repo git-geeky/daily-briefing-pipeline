@@ -112,17 +112,29 @@ def lookup_name(name: str, fetcher: JsonFetcher, *, with_iucn: bool = True) -> N
     return facts
 
 
-def lookup_names(names: list[str], fetcher: JsonFetcher, *, with_iucn: bool = True) -> dict[str, NameFacts]:
-    return {name: lookup_name(name, fetcher, with_iucn=with_iucn) for name in dict.fromkeys(names)}
+def lookup_names(names: list[str], fetcher: JsonFetcher, *, with_iucn: bool = True,
+                 cache: dict[str, NameFacts] | None = None) -> dict[str, NameFacts]:
+    """Look names up once each. ``cache`` (kept by the caller for the run) saves repeat calls across articles and repair rounds;
+    a lookup that failed on a network error is not cached, so a later round retries it."""
+    out: dict[str, NameFacts] = {}
+    for name in dict.fromkeys(names):
+        if cache is not None and name in cache:
+            out[name] = cache[name]
+            continue
+        facts = lookup_name(name, fetcher, with_iucn=with_iucn)
+        if cache is not None and not facts.error:
+            cache[name] = facts
+        out[name] = facts
+    return out
 
 
-def registry_facts(taxa: list[dict[str, str]], fetcher: JsonFetcher) -> str:
+def registry_facts(taxa: list[dict[str, str]], fetcher: JsonFetcher, *, cache: dict[str, NameFacts] | None = None) -> str:
     """Markdown facts block for the writer's dossier, from the slate's scientific names."""
     names = [t["scientific"] for t in taxa if t.get("scientific")]
     if not names:
         return ""
     lines = ["## Registry facts (script lookup: GBIF backbone; IUCN category as held by GBIF, which can lag the newest Red List release)"]
-    for name, facts in lookup_names(names, fetcher).items():
+    for name, facts in lookup_names(names, fetcher, cache=cache).items():
         if facts.error:
             lines.append(f"- *{name}*: lookup failed ({facts.error}); verify on the registry")
         elif facts.match == "FUZZY":
@@ -169,10 +181,10 @@ def _table_status_by_name(markdown: str) -> dict[str, str]:
     return out
 
 
-def check_article_taxonomy(markdown: str, fetcher: JsonFetcher) -> TaxonomyReport:
+def check_article_taxonomy(markdown: str, fetcher: JsonFetcher, *, cache: dict[str, NameFacts] | None = None) -> TaxonomyReport:
     report = TaxonomyReport()
     names = extract_binomials(markdown)
-    report.facts = lookup_names(names, fetcher)
+    report.facts = lookup_names(names, fetcher, cache=cache)
     table = _table_status_by_name(markdown)
     for name, facts in report.facts.items():
         if facts.error:

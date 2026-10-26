@@ -204,6 +204,31 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertGreaterEqual(len(result["articles_done"]), 6)
 
 
+    def test_script_fetched_dossier_reaches_the_writer_and_its_text_counts_as_opened_source(self) -> None:
+        result = run_harness("dossier_quote", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertIn("The fixture population numbered 4,321 animals", result["article_prompts"][0])
+        self.assertIn("Registry facts", result["article_prompts"][0])
+        self.assertIn("IUCN Red List: VU", result["article_prompts"][0])
+        self.assertNotIn("repair", result["calls"], "a quotation found in the script-fetched page is verified; no repair needed")
+        self.assertIn("fixture-story-2", " ".join(result["articles_done"]))
+        self.assertTrue(any(name.startswith("fixture-story-1.dossier") for name in result["dossier_files"]), result["dossier_files"])
+        self.assertTrue(result["digest_tools"] and all(tools == [] for tools in result["digest_tools"]),
+                        "with dossiers the digest writer needs no tools")
+
+    def test_a_misspelt_binomial_is_caught_by_the_gbif_lookup_and_repaired(self) -> None:
+        result = run_harness("taxonomy_typo", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertEqual(result["calls"]["repair"], 1)
+        self.assertIn("closest accepted name in the GBIF backbone is \"Genus species\"", result["repair_prompts"][0])
+        self.assertNotIn("Genus speceis", result["assembled_text"])
+
+    def test_without_network_helpers_the_writer_is_told_to_research_for_itself(self) -> None:
+        result = run_harness("happy", self.fresh())
+        self.assertIn("the script fetched nothing for this story", result["article_prompts"][0])
+        self.assertEqual(result["dossier_files"], [])
+
+
 class ConductorCliTests(unittest.TestCase):
     def cli(self, *args: str, root: Path) -> subprocess.CompletedProcess:
         env = {**os.environ, "DAILY_BRIEFING_ROOT": str(root), "DAILY_BRIEFING_SHARED_ROOT": str(REPO_ROOT)}

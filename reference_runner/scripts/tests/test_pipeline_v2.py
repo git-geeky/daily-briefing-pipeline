@@ -369,7 +369,7 @@ class PromptTemplateTests(unittest.TestCase):
         "EDITION_LABEL", "DATE", "DATE_HUMAN", "SPEC", "STORY_JSON", "PRIOR_TITLES", "WORDS_TARGET", "STORY_ID", "PRIOR_MARKER",
         "SECTION", "SECTION_TITLE", "SECTION_BRIEF", "FINDINGS", "ARTICLE", "INGEST", "SOURCE_COUNT", "SLATE_CANDIDATES", "QUOTAS",
         "SECTION_BRIEFS", "SUMMARIES", "SUMMARY_LOW", "SUMMARY_HIGH", "MIN_CROSS", "CROSS_LABEL", "CROSS_FORMAT", "ITEMS_JSON",
-        "DIGEST_ITEMS", "ARTICLES",
+        "DIGEST_ITEMS", "ARTICLES", "DOSSIER", "DOSSIERS",
     }
 
     def test_all_placeholders_are_known_and_every_edition_has_the_prompts_it_needs(self) -> None:

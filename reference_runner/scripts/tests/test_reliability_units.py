@@ -155,5 +155,17 @@ class ExtractJsonTests(unittest.TestCase):
         self.assertEqual(slate_core.extract_json('[{"a": [1, 2]}, {"b": {"c": 1}}]'), [{"a": [1, 2]}, {"b": {"c": 1}}])
 
 
+
+class RenderPromptTests(unittest.TestCase):
+    def test_placeholder_lookalikes_inside_fetched_text_are_left_alone(self) -> None:
+        out = cc.render_prompt("A {{DOSSIER}} B {{TITLE}}", {"DOSSIER": "page says {{TITLE}} and {{UNKNOWN}}", "TITLE": "real"})
+        self.assertEqual(out, "A page says {{TITLE}} and {{UNKNOWN}} B real")
+
+    def test_a_missing_value_for_a_template_placeholder_is_still_an_error(self) -> None:
+        with self.assertRaises(ValueError) as caught:
+            cc.render_prompt("{{A}} {{B}}", {"A": "x"})
+        self.assertIn("B", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -197,7 +197,7 @@
     "review_enabled": false,
     "models": {
       "slate": {
-        "model": "opus",
+        "model": "sonnet",
         "effort": "medium"
       },
       "article": {
@@ -209,11 +209,11 @@
         "effort": "low"
       },
       "header": {
-        "model": "opus",
+        "model": "sonnet",
         "effort": "low"
       },
       "closing": {
-        "model": "opus",
+        "model": "sonnet",
         "effort": "medium"
       }
     },

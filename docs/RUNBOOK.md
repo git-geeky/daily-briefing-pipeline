@@ -19,14 +19,18 @@ v2 replaces the model-as-orchestrator with a program (`conductor_core.py`) that 
 ## 2. Pipeline (per edition)
 
 ```
-preflight (limit probe)  ->  source audit  ->  ingest (headline harvest)  ->  slate (Opus + search)
-   -> photos (animal)  ->  articles (Sonnet, one call each, parallel x2; repair rounds; provenance gate)
-   -> digest (animal)  ->  header (Opus, deterministic fallback)  ->  closing (daily; visible fallback)
+preflight (limit probe)  ->  source audit  ->  ingest (headline harvest)  ->  slate (Sonnet + search)
+   -> photos (animal)  ->  per article: dossier (script fetch) -> Sonnet draft -> GBIF name/status check
+      -> provenance gate -> repair rounds   (parallel x2)
+   -> digest (animal; Sonnet, no tools, from script-fetched pages)  ->  header (Sonnet, deterministic fallback)
+   -> closing (daily; visible fallback)
    -> assemble -> validate (drops offending articles if enough remain) -> PDF -> visual QA
    -> advisory review (animal) -> delivery (aiserver) -> receipt
 ```
 
 Every stage writes its result and is skipped on re-run, so a deferred or killed run **resumes** where it stopped. Model calls are `claude -p --output-format stream-json --safe-mode --permission-prompts none`, so no prompt can hang the run and the user's CLAUDE.md, hooks and MCP servers do not bloat context.
+
+Script first, subscription second. Everything an HTTP client can do is done by script before or after a model call: the source audit and headline harvest, photograph search and licence checks, fetching each story's source pages and paper records (Europe PMC, Crossref), GBIF accepted-name and IUCN-category lookups, and the number, quotation, DOI and URL checks. The model writes. All stages default to Sonnet; Opus is used only as the one-shot fallback when a call is refused, and the Fable adversarial review is off (`review_enabled`). The dossier needs the network from the machine running the conductor; where a page cannot be fetched (bot-blocked, script-rendered) the writer is told so and opens it with `WebFetch`.
 
 Guarantees worth knowing:
 
@@ -101,7 +105,7 @@ To rerun a day from scratch, delete that day's `*-conductor.json` and the `*-art
 
 * The conductor reads five-hour and seven-day utilisation from the CLI's own `rate_limit_event`. Defaults (edit `conductor.budget` in the edition file): defer a run that *starts* above 80% (five-hour) or 90% (seven-day); stop launching new articles above 92%; cap a run at `max_cost_usd_per_run` and an article at `max_cost_usd_per_article` (API-equivalent dollars; your plan is not billed per token, but the figure is a good relative meter).
 * A limit with at least the minimum number of finished articles ships a partial briefing unless the reset is within 90 minutes, in which case the run waits and completes.
-* To spend less: lower `article_sections` targets or `max_parallel_articles`, move `slate`/`header` from Opus to Sonnet, or set `review_enabled: false`.
+* To spend less: lower `article_sections` targets or `max_parallel_articles`. The defaults are already Sonnet everywhere with the review off; to spend more on quality, move `slate`, `header` or `closing` to `opus` in `conductor.models`, or set `review_enabled: true` (Fable review, Opus fallback). `conductor.dossier.enabled: false` returns the writer to fetching its own sources.
 
 ### Measured cost and time (one live sample each, extrapolated; treat as an estimate)
 
@@ -134,9 +138,9 @@ Extrapolation for a full animal run: about $5-7 and 35-45 minutes (audit 6 min, 
 
 ## 6. What was and was not verified
 
-Verified in the build environment (cloud Linux, real `claude` CLI and real network): 254 automated tests including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; one **real** Sonnet article through the real validators and provenance checker (including a real repair round that caught a paraphrase inside quotation marks, and a real repair that removed first-person narration without losing content); a **real** source audit, headline ingest and Opus slate for the animal edition on the day's news; a real Opus header; the real `claude -p` stream format, usage and rate-limit fields; the live Wikimedia, iNaturalist and Openverse photo providers.
+Verified in the build environment (cloud Linux, real `claude` CLI and real network): 322 automated tests (66 skipped by design: they need the legacy runner scripts) including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; one **real** Sonnet article through the real validators and provenance checker (including a real repair round that caught a paraphrase inside quotation marks, and a real repair that removed first-person narration without losing content); a **real** source audit, headline ingest and Opus slate for the animal edition on the day's news; a real Opus header; the real `claude -p` stream format, usage and rate-limit fields; the live Wikimedia, iNaturalist and Openverse photo providers.
 
-Not verified, and marked untested in the scripts: everything on the Windows desktop (PowerShell launchers, Task Scheduler registration, `Invoke-RemoteBash`/scp path), the aiserver deployment of the new `deliver_core.py`, a full real ten-article run, the real digest, daily closing and Fable review calls, any real run of the daily edition, and the experimental Codex backend. Treat the first week as a burn-in: run with `-NoDeliver`, read the PDFs, and watch `-Diagnose`.
+The script-built dossier and the GBIF checks are verified against fakes and unit tests only; they have not yet been run end to end against live pages in a full article. Not verified, and marked untested in the scripts: everything on the Windows desktop (PowerShell launchers, Task Scheduler registration, `Invoke-RemoteBash`/scp path), the aiserver deployment of the new `deliver_core.py`, a full real ten-article run, the real digest, daily closing and Fable review calls, any real run of the daily edition, and the experimental Codex backend. Treat the first week as a burn-in: run with `-NoDeliver`, read the PDFs, and watch `-Diagnose`.
 
 ## 7. Maintenance
 

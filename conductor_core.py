@@ -65,10 +65,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "section_briefs": {},
     "timezone": "Asia/Tokyo", "deadline_local": "11:30",
     "models": {
-        "classify": {"model": "haiku", "effort": "low"}, "slate": {"model": "opus", "effort": "medium"},
+        "classify": {"model": "haiku", "effort": "low"}, "slate": {"model": "sonnet", "effort": "medium"},
         "article": {"model": "sonnet", "effort": "medium"}, "repair": {"model": "sonnet", "effort": "low"},
-        "header": {"model": "opus", "effort": "low"}, "digest": {"model": "sonnet", "effort": "low"},
-        "closing": {"model": "opus", "effort": "medium"},
+        "header": {"model": "sonnet", "effort": "low"}, "digest": {"model": "sonnet", "effort": "low"},
+        "closing": {"model": "sonnet", "effort": "medium"},
         "review": {"model": "opus", "effort": "medium", "optional": True},
     },
     "budget": {
@@ -77,10 +77,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "stop_launching_above": 0.92,
     },
     "timeouts": {"article_s": 2400, "slate_s": 1200, "header_s": 600, "digest_s": 1500, "repair_s": 1500, "probe_s": 120, "idle_s": 600},
-    "repairs_per_article": 2, "call_retries": 2, "retry_backoff_s": 20, "review_enabled": True,
+    "repairs_per_article": 2, "call_retries": 2, "retry_backoff_s": 20, "review_enabled": False,
     "stage_timeout_s": {"assemble": 600, "validate": 600, "pdf": 900, "visual_qa": 900, "audit": 1800, "images": 900},
     "lock_stale_minutes": 240, "fallback_on_refusal": "opus", "enabled": True, "wait_for_reset_minutes": 90,
+    # Script-first: what an HTTP client can fetch is fetched before the writer starts (dossier_core), and names and IUCN
+    # categories are checked against GBIF after drafting (taxonomy_core). Both need network access and cost no subscription usage.
+    "dossier": {"enabled": True, "max_sources": 6, "per_source_chars": 9000, "total_chars": 36000, "max_papers": 4,
+                "repair_chars": 14000, "digest_sources": 2, "digest_chars": 5000},
+    "taxonomy_check": True,
 }
+
+NO_DOSSIER = "(the script fetched nothing for this story: research it with WebFetch and WebSearch)"
 
 
 class Deferred(Exception):
@@ -134,13 +141,13 @@ def load_json(path: Path, default: Any = None) -> Any:
 
 
 def render_prompt(template: str, values: dict[str, Any]) -> str:
-    out = template
-    for key, value in values.items():
-        out = out.replace("{{" + key + "}}", str(value))
-    leftover = sorted(set(re.findall(r"\{\{([A-Z_]+)\}\}", out)))
-    if leftover:
-        raise ValueError(f"unfilled prompt placeholders: {', '.join(leftover)}")
-    return out
+    """Fill ``{{NAME}}`` placeholders in one pass over the *template*. Values (fetched page text among them) are never
+    re-scanned, so a source page that happens to contain ``{{TITLE}}`` neither crashes the run nor gets substituted."""
+    names = set(re.findall(r"\{\{([A-Z_]+)\}\}", template))
+    missing = sorted(names - set(values))
+    if missing:
+        raise ValueError(f"unfilled prompt placeholders: {', '.join(missing)}")
+    return re.sub(r"\{\{([A-Z_]+)\}\}", lambda match: str(values[match.group(1)]), template)
 
 
 def human_date(date: str) -> str:
@@ -328,6 +335,7 @@ class Conductor:
         photo_fetcher: Any = None,
         json_fetcher: Any = None,
         url_checker: Callable[[str], int | None] | None = None,
+        web_fetcher: Any = None,
         settings_override: dict[str, Any] | None = None,
         dry_run: bool = False,
         deliver: bool = True,
@@ -347,6 +355,10 @@ class Conductor:
 
             json_fetcher = json_fetcher or photo_core.RequestsFetcher()
             url_checker = url_checker or provenance_core.default_url_checker()
+            # Fewer retries and a shorter timeout than the photo fetcher: a dead source must cost seconds, not minutes.
+            web_fetcher = web_fetcher or photo_core.RequestsFetcher(timeout=20.0, retries=1)
+        self.web_fetcher = web_fetcher
+        self._taxon_cache: dict[str, Any] = {}
         self.photo_fetcher, self.json_fetcher, self.url_checker = photo_fetcher, json_fetcher, url_checker
         self.audit_fixture = audit_fixture
         self.settings = merge_settings(edition)
@@ -949,6 +961,51 @@ class Conductor:
         result = manifest.evaluate_item_rules(section, item, rules, audit_available=bool(audit))
         return result["blocking"], item
 
+    def story_dossier(self, story: dict[str, Any], *, light: bool = False):
+        """Fetch the story's sources, paper records and registry facts by script (cached on disk for retries and resume)."""
+        cfg = self.settings.get("dossier") or {}
+        if not cfg.get("enabled", True) or self.web_fetcher is None:
+            return None
+        import dossier_core
+
+        sid = story["story_id"]
+        path = self.articles_dir / f"{sid}.dossier{'-light' if light else ''}.json"
+        cached = load_json(path, None)
+        if isinstance(cached, dict) and cached.get("story_id") == sid:
+            return dossier_core.Dossier.from_dict(cached)
+        registry = ""
+        taxa = [t for t in story.get("taxa") or [] if isinstance(t, dict) and t.get("scientific")]
+        if taxa and not light:
+            try:
+                import taxonomy_core
+
+                registry = taxonomy_core.registry_facts(taxa, self.web_fetcher, cache=self._taxon_cache)
+            except Exception as exc:  # noqa: BLE001 - registry outage: the writer opens the registry pages itself
+                self.log(f"registry facts for {sid} unavailable: {exc!r}")
+        try:
+            dossier = dossier_core.build_dossier(
+                story, self.web_fetcher, max_sources=int(cfg["digest_sources"] if light else cfg["max_sources"]),
+                per_source_chars=int(cfg["digest_chars"] if light else cfg["per_source_chars"]),
+                total_chars=int(cfg["digest_chars"] if light else cfg["total_chars"]),
+                max_papers=1 if light else int(cfg["max_papers"]), registry=registry)
+        except Exception as exc:  # noqa: BLE001 - never let a fetch problem stop an article
+            self.log(f"dossier for {sid} failed: {exc!r}")
+            return None
+        atomic_write(path, json.dumps(dossier.to_dict(), ensure_ascii=False))
+        self.log(f"dossier {sid}{' (light)' if light else ''}: {dossier.summary()}")
+        return dossier
+
+    def check_taxonomy(self, article: str):
+        if self.web_fetcher is None or not self.settings.get("taxonomy_check", True):
+            return None
+        try:
+            import taxonomy_core
+
+            return taxonomy_core.check_article_taxonomy(article, self.web_fetcher, cache=self._taxon_cache)
+        except Exception as exc:  # noqa: BLE001 - a registry outage must never fail an article
+            self.log(f"taxonomy check skipped: {exc!r}")
+            return None
+
     def draft_path(self, story_id: str) -> Path:
         return self.articles_dir / f"{story_id}.draft.json"
 
@@ -979,6 +1036,7 @@ class Conductor:
             "SECTION": section, "SECTION_TITLE": self.edition.section_titles.get(section, section),
             "SECTION_BRIEF": self.settings["section_briefs"].get(section, ""),
             "PRIOR_MARKER": f"; prior: {story['prior_story_id']}" if story.get("prior_story_id") else "",
+            "DOSSIER": NO_DOSSIER,
         }
         outcome = ArticleOutcome(sid, "failed")
         corpus: list[str] = []
@@ -989,9 +1047,14 @@ class Conductor:
             outcome.attempts, outcome.cost_usd = int(draft.get("attempts", 1)), float(draft.get("cost_usd", 0.0))
             outcome.fixes = list(draft.get("fixes") or [])
             self.log(f"article {sid}: resuming from the saved draft")
+            dossier = self.story_dossier(story)
         else:
             if self.past_deadline() and len(self._finished_articles()) >= self.total_min():
                 raise Deferred("past the deadline; no new articles are started", kind="deadline")
+            dossier = self.story_dossier(story)
+            if dossier:
+                values["DOSSIER"] = dossier.render()
+                corpus += dossier.corpus()
             result = self.call("article", self.prompt("article", values), role="article", tools=["WebFetch", "WebSearch"],
                                label=sid, budget_usd=budget)
             outcome.attempts, outcome.cost_usd = 1, result.cost_usd
@@ -1015,13 +1078,17 @@ class Conductor:
             outcome.fixes += fixes
             self._save_draft(sid, article, corpus, outcome)
         article = photo_core.insert_photos(article, self.photo_lines(sid))
+        repair_dossier = dossier.render(total_chars=int(self.settings["dossier"]["repair_chars"])) if dossier else NO_DOSSIER
 
+        tax = None
         for round_no in range(int(self.settings["repairs_per_article"]) + 1):
             blocking, item = self.check_article_text(article, section)
             prov = provenance_core.check_article(
                 article, corpus, json_fetcher=self.json_fetcher, url_checker=self.url_checker, check_network=self.check_network)
+            tax = self.check_taxonomy(article)
+            tax_bad = bool(tax and tax.needs_repair())
             word_only = bool(blocking) and all("hard word floor" in b for b in blocking)
-            if not blocking and not prov.needs_repair():
+            if not blocking and not prov.needs_repair() and not tax_bad:
                 break
             if word_only and round_no >= 1:
                 break  # repairs cannot create honest material; let the story be replaced
@@ -1030,10 +1097,12 @@ class Conductor:
             findings = [f"- {b}" for b in blocking]
             if prov.needs_repair():
                 findings.append("Provenance check (could not be matched to any source opened in this run):\n" + prov.repair_brief())
+            if tax_bad:
+                findings.append("Taxonomy and status check (script lookup against the GBIF backbone):\n" + tax.repair_brief())
             if word_only:
                 findings.append("The article is below the hard word floor. Add only real, sourced material (open more sources); "
                                 "if there is not enough genuine material, return SKIP: material_limited.")
-            fix = self.call("repair", self.prompt("repair", {**values, "FINDINGS": "\n".join(findings), "ARTICLE": article}),
+            fix = self.call("repair", self.prompt("repair", {**values, "DOSSIER": repair_dossier, "FINDINGS": "\n".join(findings), "ARTICLE": article}),
                             role="repair", tools=["WebFetch", "WebSearch"], label=sid, budget_usd=budget,
                             timeout_key="repair_s")
             outcome.attempts += 1
@@ -1057,6 +1126,10 @@ class Conductor:
 
         outcome.words = int(item.get("word_count", 0))
         outcome.provenance = prov.to_dict()
+        if tax is not None:
+            outcome.provenance["taxonomy"] = tax.to_dict()
+            if tax.needs_repair():
+                outcome.flags.append(f"taxonomy: {len(tax.misspellings)} name(s) and {len(tax.status_mismatches)} status entr(ies) not confirmed against GBIF")
         outcome.blocking = blocking
         fatal_dois = [doi for doi, info in prov.dois.items() if info.get("status") == "not_found"]
         if prov.needs_repair():
@@ -1102,24 +1175,37 @@ class Conductor:
         attempted = {sid for sid in (p.stem for p in self.articles_dir.glob("*.json"))}
         pool = [s for s in slate["backups"] if s["story_id"] not in used and s["story_id"] not in attempted]
         pool = pool[: int(self.settings["digest_items"]) + 2]
+        dossiers: dict[str, Any] = {}
+        if self.web_fetcher is not None:
+            # Script-first: the pages are fetched here, so the writer needs no tools and cannot spend turns on fetching.
+            for story in pool:
+                found = self.story_dossier(story, light=True)
+                if found and (found.summary()["sources_ok"] or found.papers):
+                    dossiers[story["story_id"]] = found
+            pool = [s for s in pool if s["story_id"] in dossiers]
         if not pool:
             self.state.mark("digest", "done", items=0)
             return
+        cfg = self.settings["dossier"]
         values = {
             "EDITION_LABEL": self.edition.label, "DATE": self.date, "DATE_HUMAN": human_date(self.date), "SPEC": self.spec_text(),
             "ITEMS_JSON": json.dumps([{k: s[k] for k in ("story_id", "title", "angle", "why_now", "taxa", "sources")} for s in pool],
                                      indent=1, ensure_ascii=False),
             "DIGEST_ITEMS": self.settings["digest_items"],
+            "DOSSIERS": "\n\n".join(f"### Dossier for {sid}\n{d.render(total_chars=int(cfg['digest_chars']), max_sources=int(cfg['digest_sources']))}"
+                                     for sid, d in dossiers.items()) or NO_DOSSIER,
         }
         try:
-            result = self.call("digest", self.prompt("digest", values), role="digest", tools=["WebFetch", "WebSearch"],
-                               label="digest", budget_usd=float(self.settings["budget"]["max_cost_usd_per_article"]))
+            result = self.call("digest", self.prompt("digest", values), role="digest",
+                               tools=[] if dossiers else ["WebFetch", "WebSearch"], label="digest",
+                               budget_usd=float(self.settings["budget"]["max_cost_usd_per_article"]))
         except Deferred:
             self.state.mark("digest", "done", items=0, skipped="deferred")
             return
         items: list[str] = []
         if result.ok:
             import briefing_manifest as manifest
+            import provenance_core
 
             by_id = {s["story_id"]: s for s in pool}
             for heading, body in manifest.split_items("\n" + result.text):
@@ -1134,6 +1220,11 @@ class Conductor:
                 if blocking:
                     self.log(f"digest item {story['story_id']} dropped: {'; '.join(blocking)[:160]}")
                     continue
+                if sid in dossiers:  # the writer had no tools: every figure and quotation must come from its dossier
+                    prov = provenance_core.check_article(text, dossiers[sid].corpus(), check_network=False)
+                    if prov.unmatched_quotes or (prov.numbers_checked >= 4 and prov.unmatched_ratio > 0.35):
+                        self.log(f"digest item {sid} dropped: figures or quotations not found in its dossier")
+                        continue
                 items.append(text)
         atomic_write(self.articles_dir / "digest.json", json.dumps({"items": items}, ensure_ascii=False))
         self.state.mark("digest", "done", items=len(items))

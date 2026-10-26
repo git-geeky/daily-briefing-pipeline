@@ -100,6 +100,28 @@ class QuoteRegressionTests(unittest.TestCase):
         self.assertEqual(len(report.unmatched_quotes), 1)
 
 
+class TranslatedQuoteTests(unittest.TestCase):
+    """Native-language sources are quoted in the writer's translation, which cannot match the fetched original verbatim."""
+
+    def test_a_quotation_marked_as_a_translation_is_exempt_from_the_verbatim_check_but_reported(self) -> None:
+        article = ('## T\nThe agency said "the population of the island has fallen by roughly half since the survey of 2019" '
+                   '(translation from the Japanese original).\n\nA second paragraph follows here.\n')
+        report = prov.check_article(article, ["the original text is in Japanese: 島の個体数は2019年の調査以降およそ半減した"], check_network=False)
+        self.assertEqual(report.unmatched_quotes, [])
+        self.assertEqual(report.quotes_checked, 0)
+        self.assertEqual(len(report.translated_quotes), 1)
+        self.assertEqual(report.to_dict()["translated_quotes"], 1)
+        self.assertFalse(report.needs_repair())
+
+    def test_the_cue_must_sit_next_to_the_quotation_not_anywhere_in_the_article(self) -> None:
+        article = ('## T\nA translation of the report appeared later in the week, covering other matters entirely and at length '
+                   'so that nothing near the quotation mentions it.\n\n' + ("Filler sentence about telemetry. " * 20) +
+                   '\n\nThe minister said "a wholly invented sentence that no source contains" at the hearing.\n')
+        report = prov.check_article(article, ["unrelated"], check_network=False)
+        self.assertEqual(len(report.unmatched_quotes), 1)
+        self.assertEqual(report.translated_quotes, [])
+
+
 class CitationTests(unittest.TestCase):
     def test_doi_in_corpus_ok_missing_doi_not_found(self) -> None:
         report = prov.check_article(ARTICLE, CORPUS, json_fetcher=FakeCrossref(), url_checker=lambda url: 200)

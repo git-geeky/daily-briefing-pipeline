@@ -251,13 +251,14 @@
     "slate_candidates": 14,
     "digest_items": 6,
     "max_parallel_articles": 2,
+    "review_enabled": false,
     "models": {
       "classify": {
         "model": "haiku",
         "effort": "low"
       },
       "slate": {
-        "model": "opus",
+        "model": "sonnet",
         "effort": "medium"
       },
       "article": {
@@ -269,7 +270,7 @@
         "effort": "low"
       },
       "header": {
-        "model": "opus",
+        "model": "sonnet",
         "effort": "low"
       },
       "digest": {

@@ -677,6 +677,24 @@ class SharedBriefingValidationTests(unittest.TestCase):
             f"Expected part2 section-pool blocking error; got: {report['blocking_errors']}",
         )
 
+    def test_section_pool_minimum_is_only_a_warning_when_the_conductor_marks_it_advisory(self) -> None:
+        """The conductor sets BRIEFING_SECTION_SOURCES_ADVISORY: a live run showed writers cannot see which domains count, and
+        the hard gate failed 8 of 20 verified articles. The legacy runners (no variable) keep the hard gate (test above)."""
+        import re as _re
+        from unittest import mock as _mock
+
+        self._write_valid_briefing()
+        part2_path = self.briefing_paths.fragment_path("part2", self.DATE)
+        text = part2_path.read_text(encoding="utf-8")
+        text = _re.sub(r"- TechCrunch: section-pool coverage[^\n]*\n", "- Removed Outlet A: filler line - https://example-removed.test/a/x\n", text)
+        text = _re.sub(r"- MIT Technology Review: section-pool coverage[^\n]*\n", "- Removed Outlet B: filler line - https://example-removed.test/b/x\n", text)
+        part2_path.write_text(text, encoding="utf-8")
+        self.assemble_briefing.assemble(self.DATE)
+        with _mock.patch.dict(os.environ, {"BRIEFING_SECTION_SOURCES_ADVISORY": "1"}):
+            report = self.validate_briefing.validate_briefing(self.DATE, raise_on_error=False)
+        self.assertFalse(any("catalog pool" in error for error in report["blocking_errors"]), report["blocking_errors"])
+        self.assertTrue(any("part2-tagged catalog pool" in warning for warning in report["warnings"]), report["warnings"])
+
     def test_validate_warns_when_section_stops_at_minimum_without_rejections(self) -> None:
         self._write_valid_briefing()
         part4_path = self.briefing_paths.fragment_path("part4", self.DATE)

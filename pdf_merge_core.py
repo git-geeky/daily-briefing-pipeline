@@ -25,9 +25,16 @@ class Part:
     note: str = ""                                     # one line under the label (e.g. "6 of 10 target stories")
 
 
+_PUNCTUATION = {"\u2013": "-", "\u2014": "-", "\u2212": "-", "\u2010": "-", "\u2011": "-", "\u2018": "'", "\u2019": "'", "\u201c": '"',
+                "\u201d": '"', "\u2026": "...", "\u00a0": " ", "\u2022": "-", "\u00d7": "x", "\u2192": "->", "\u2020": "", "\u2248": "~",
+                "\u2264": "<=", "\u2265": ">="}
+
+
 def _latin(text: str) -> str:
-    """The index uses the built-in Helvetica (Latin only): fold accents, replace anything else with '?'."""
-    folded = "".join(ch for ch in unicodedata.normalize("NFKD", text or "") if not unicodedata.combining(ch))
+    """The index uses the built-in Helvetica (Latin only): fold dashes, quotes and accents, drop markdown emphasis marks, and
+    replace anything else with '?'."""
+    text = "".join(_PUNCTUATION.get(ch, ch) for ch in (text or "")).replace("*", "").replace("`", "")
+    folded = "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
     return folded.encode("latin-1", "replace").decode("latin-1")
 
 

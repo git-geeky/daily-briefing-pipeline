@@ -153,6 +153,30 @@ print(json.dumps(result))
 '''
 
 
+class DeterministicHeaderSizeTests(unittest.TestCase):
+    """Live-run finding: the fallback header was ~1,100 words for twenty stories (limit 600-800), so a failed model header meant no briefing."""
+
+    def summaries(self, n: int) -> list[dict]:
+        return [{"title": f"Story {i}: officials confirm a structural change in policy, markets and the balance of power in region {i}",
+                 "bottom_line": " ".join(f"word{j}" for j in range(45)) + ".", "confidence": "Medium - one clause", "group": "other",
+                 "region": f"Region {i}", "taxa": "", "part": "Part I"} for i in range(1, n + 1)]
+
+    def words_before_cross_currents(self, text: str) -> int:
+        return len(text.split("## Executive Summary")[1].split("### ")[0].split())
+
+    def test_twenty_stories_fit_a_600_to_800_word_summary(self) -> None:
+        text = tools.deterministic_header(label="L", date_human="D", prepared_by="P", summaries=self.summaries(20), summary_words=(600, 800), cross_label="Top 3 Structural Forces", min_cross=3)
+        self.assertTrue(600 <= self.words_before_cross_currents(text) <= 800, self.words_before_cross_currents(text))
+        for i in range(1, 21):
+            self.assertIn(f"Story {i}:", text)
+
+    def test_ten_stories_still_fit_the_animal_range_and_small_slates_are_topped_up(self) -> None:
+        text = tools.deterministic_header(label="L", date_human="D", prepared_by="P", summaries=self.summaries(10), summary_words=(250, 750), min_cross=2)
+        self.assertTrue(250 <= self.words_before_cross_currents(text) <= 750)
+        small = tools.deterministic_header(label="L", date_human="D", prepared_by="P", summaries=self.summaries(2), summary_words=(250, 750), min_cross=2)
+        self.assertGreaterEqual(self.words_before_cross_currents(small), 100)
+
+
 class HeadingCanonicalisationTests(unittest.TestCase):
     """Live-run finding: 'Source bias' was renamed 'Primary Sources' (a prefix match), giving two of them."""
 

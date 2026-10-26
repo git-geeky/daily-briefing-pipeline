@@ -147,7 +147,8 @@
       600,
       800
     ],
-    "min_cross_references": 3
+    "min_cross_references": 3,
+    "cross_reference_label": "Top 3 Structural Forces"
   },
   "images": {
     "mode": "single",
@@ -195,6 +196,7 @@
     "timezone": "Asia/Tokyo",
     "deadline_local": "17:30",
     "review_enabled": false,
+    "section_sources_advisory": true,
     "models": {
       "slate": {
         "model": "opus",

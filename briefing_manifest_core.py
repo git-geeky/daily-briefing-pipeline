@@ -1255,8 +1255,11 @@ def evaluate_item_rules(
                 f"catalog pool (minimum is {min_section_sources}); open SOURCES.md and pull "
                 f"from the dedicated section list — TIER 0 wires and cross-section sources do not count"
             )
-            # A live run failed three verified articles on this rule alone. An edition can make it a goal, not a gate.
-            (blocking if rules.get("section_sources_blocking", True) else warnings).append(message)
+            # A live run failed verified articles on this rule alone (3 of 10 animal, 8 of 20 daily): a writer cannot see which
+            # domains count. An edition (data) or the conductor (BRIEFING_SECTION_SOURCES_ADVISORY=1) can make it a goal, not a gate;
+            # the legacy runners keep the hard gate.
+            advisory = os.environ.get("BRIEFING_SECTION_SOURCES_ADVISORY") == "1" or not rules.get("section_sources_blocking", True)
+            (warnings if advisory else blocking).append(message)
     for label in (item.get("missing_required_blocks") or {}).get("blocking", []):
         blocking.append(f"{prefix}: missing required block: {label}")
     for label in (item.get("missing_required_blocks") or {}).get("warning", []):

@@ -147,9 +147,23 @@ Extrapolation for a full animal run (measured before the Sonnet defaults; the sl
 
 ## 6. What was and was not verified
 
-Verified in the build environment (cloud Linux, real `claude` CLI and real network): 352 automated tests (66 skipped by design: they need the legacy runner scripts) including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; one **real** Sonnet article through the real validators and provenance checker (including a real repair round that caught a paraphrase inside quotation marks, and a real repair that removed first-person narration without losing content); a **real** source audit, headline ingest and Opus slate for the animal edition on the day's news; a real Opus header; the real `claude -p` stream format, usage and rate-limit fields; the live Wikimedia, iNaturalist and Openverse photo providers.
+**Verified in the build environment** (cloud Linux, real `claude` CLI, real network, no email sent, no Windows desktop, no aiserver): 357 automated tests, including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; and **three full live runs** on 2026-10-26:
 
-The script-built dossier and the GBIF checks are verified against fakes and unit tests only; they have not yet been run end to end against live pages in a full article. Not verified, and marked untested in the scripts: everything on the Windows desktop (PowerShell launchers, Task Scheduler registration, `Invoke-RemoteBash`/scp path), the aiserver deployment of the new `deliver_core.py`, a full real ten-article run, the real digest, daily closing and Fable review calls, any real run of the daily edition, and the experimental Codex backend. Treat the first week as a burn-in: run with `-NoDeliver`, read the PDFs, and watch `-Diagnose`.
+| Run | What happened | Cost (API-equivalent) |
+|---|---|---|
+| Animal, first | Failed: 5 of 10 articles finished (minimum 6). Causes, all fixed: a short quoted phrase handed its closing quote to the next quotation (phantom "invented quote"); Dutch `200.000` did not match `200,000`; the catalog-pool minimum blocked three verified articles; the slate returned no reserves | $4.90, 36 min |
+| Animal, second and resume | 10 of 10 articles, 66-page PDF with 20 licensed photographs, "Also noted" 2 items. The first PDF attempt died on a mis-nested bold/italic in one source bullet (fixed: tags balanced, plain-text fallback) | $4.21, about 37 min |
+| Daily, first | Failed: 9 of 12 articles. Causes, all fixed: the heading cleanup renamed "Source bias" to "Primary Sources" (a prefix match; eleven articles); the headline harvest was filtered with the animal keyword list (6 of 156 kept) | $12 (est.) |
+| Daily, second | 19 of 21 target articles, closing analysis, 80-page PDF, combined PDF of 148 pages with the animal briefing first | $8.43, 28 min |
+
+After both editions the account's five-hour window read 27% and the seven-day window 12%. A re-finish of the daily briefing then exposed that the deterministic fallback header produced about 1,100 words for a 600-800 word summary (fixed and tested), so a failed model header can no longer stop the briefing.
+
+Findings that shape expectations:
+* The cloud sandbox is a datacenter IP: many publishers (bioRxiv, gcrmn.net, several news sites) refuse its fetches, and the daily source audit reported 238 of 363 sources unavailable. Several animal articles therefore say a paper's full text "was not read". Run from your desktop (`WebFetch` runs on the machine that runs the CLI) the fetch success rate should be higher; this is not verified.
+* Articles run 1,300 to 2,700 words, below the 3,500-word aim, because the writer stops when the material it could open runs out. A depth guide and a wider dossier budget are in place; reaching 3,500 depends on source access.
+* The per-section catalog-source minimum cannot be satisfied by a writer who cannot see the catalog. It is advisory (a warning and an editor's note) in the conductor flow for both editions; the legacy validators keep it as a hard gate.
+
+**Not verified:** everything on the Windows desktop (PowerShell launchers, Task Scheduler registration, `Invoke-RemoteBash`/scp path), the aiserver deployment of the new `deliver_core.py`, delivery by email of any briefing (all live runs used `--no-deliver`), the Fable review (off by default), and the experimental Codex backend. Treat the first week as a burn-in: run with `-NoDeliver`, read the PDFs, and watch `-Diagnose`.
 
 ## 7. Maintenance
 

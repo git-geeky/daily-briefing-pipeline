@@ -161,18 +161,33 @@ def deterministic_header(*, label: str, date_human: str, prepared_by: str, summa
                          min_cross: int = 2) -> str:
     """Executive summary assembled only from the articles' own titles and bottom lines."""
     low, high = summary_words
-    paragraphs = [f"Today's briefing carries {len(summaries)} stories in depth. The bottom lines, in order:"]
-    budget = high - 20
-    per_item = max(30, budget // max(len(summaries), 1) - 8)
-    for index, item in enumerate(summaries, start=1):
-        bottom = _trim_words(item["bottom_line"] or "See the article for the evidence and its limits.", per_item)
-        confidence = f" Confidence: {item['confidence'].split('—')[0].split('-')[0].strip()}." if item["confidence"] else ""
-        context = " ".join(part for part in (
-            f"Taxa: {item['taxa']}." if item.get("taxa") else "",
-            f"Setting: {item['region']}." if item.get("region") else "",
-        ) if part)
-        paragraphs.append(f"{index}. {item['title']}. {bottom}{confidence} {context}".rstrip())
-    body = "\n\n".join(paragraphs)
+
+    def build(per_item: int, extras: bool) -> str:
+        paragraphs = [f"Today's briefing carries {len(summaries)} stories in depth. The bottom lines, in order:"]
+        for index, item in enumerate(summaries, start=1):
+            bottom = _trim_words(item["bottom_line"] or "See the article for the evidence and its limits.", per_item)
+            confidence = f" Confidence: {item['confidence'].split('—')[0].split('-')[0].strip()}." if extras and item["confidence"] else ""
+            context = " ".join(part for part in (
+                f"Taxa: {item['taxa']}." if item.get("taxa") else "",
+                f"Setting: {item['region']}." if item.get("region") else "",
+            ) if part) if extras else ""
+            paragraphs.append(f"{index}. {item['title']}. {bottom}{confidence} {context}".rstrip())
+        return "\n\n".join(paragraphs)
+
+    # Titles, numbering and the extras are part of the word count, not just the bottom lines: with twenty stories the first
+    # version of this fallback produced ~1,100 words for a 600-800 word summary and the briefing could not ship. Shrink the
+    # bottom lines (then drop the extras) until the summary fits.
+    n = max(len(summaries), 1)
+    title_words = sum(len(item["title"].split()) + 2 for item in summaries)
+    per_item = max(6, (high - 25 - 14 - title_words) // n)
+    extras = True
+    body = build(per_item, extras)
+    while len(body.split()) > high - 5 and (per_item > 6 or extras):
+        if extras and per_item <= 14:
+            extras = False
+        else:
+            per_item = max(6, per_item - 2)
+        body = build(per_item, extras)
     count = len(body.split())
     if count < low:  # top up only with true, structural statements derived from the articles themselves
         groups = ", ".join(f"{n} {_GROUP_LABEL.get(g, g)}" for g, n in sorted(group_counts(summaries).items(), key=lambda kv: -kv[1]))

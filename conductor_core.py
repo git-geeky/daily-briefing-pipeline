@@ -85,6 +85,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "dossier": {"enabled": True, "max_sources": 7, "per_source_chars": 12000, "total_chars": 48000, "max_papers": 4,
                 "repair_chars": 14000, "digest_sources": 2, "digest_chars": 5000},
     "taxonomy_check": True,
+    # The per-section catalog-source minimum becomes a reported warning instead of a gate (see briefing_manifest_core).
+    "section_sources_advisory": False,
 }
 
 NO_DOSSIER = "(the script fetched nothing for this story: research it with WebFetch and WebSearch)"
@@ -367,7 +369,9 @@ class Conductor:
                 self.settings[key].update(value)
             else:
                 self.settings[key] = value
-        self.env = {**os.environ, "BRIEFING_EDITION": edition.edition_id, **(env or {})}
+        advisory = {"BRIEFING_SECTION_SOURCES_ADVISORY": "1"} if self.settings.get("section_sources_advisory") else {}
+        os.environ.update(advisory)  # in-process validators; the stage scripts get it through self.env
+        self.env = {**os.environ, "BRIEFING_EDITION": edition.edition_id, **advisory, **(env or {})}
         self._stop = threading.Event()
         self._cost_lock = threading.Lock()
         self._usage_lock = threading.Lock()
@@ -1434,6 +1438,10 @@ class Conductor:
                 self.state.mark("validate", "done", attempt=attempt)
                 if dropped:
                     notes.append("dropped after validation: " + "; ".join(dropped))
+                short = [w for w in (load_json(Path(self.paths.validation_report_path(self.date)), {}).get("warnings") or [])
+                         if "catalog pool" in w]
+                if short:
+                    notes.append(f"{len(short)} article(s) cite fewer catalog sources than the section minimum (advisory)")
                 return articles, notes
             report = load_json(Path(self.paths.validation_report_path(self.date)), {})
             blocking = report.get("blocking_errors") or []

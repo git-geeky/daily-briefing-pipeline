@@ -84,6 +84,9 @@ class CombineTests(unittest.TestCase):
         self.assertIn("Broken", str(caught.exception))
         self.assertFalse((self.dir / "x.pdf").exists())
 
+    def test_dashes_quotes_and_markdown_marks_are_folded_not_turned_into_question_marks(self) -> None:
+        self.assertEqual(merge._latin("Season 2026\u201327: \u201cfirst\u201d *Salmo salar* \u2013 1980\u20132009\u2026"), 'Season 2026-27: "first" Salmo salar - 1980-2009...')
+
     def test_nothing_to_combine_is_an_error(self) -> None:
         with self.assertRaises(ValueError):
             merge.combine_pdfs([], self.dir / "x.pdf", heading="H", date_human="D")

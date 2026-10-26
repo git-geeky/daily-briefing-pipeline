@@ -8,7 +8,10 @@
     "label": "The Animal Science Briefing",
     "author": "Animal Science Report"
   },
-  "sections": ["animals", "digest"],
+  "sections": [
+    "animals",
+    "digest"
+  ],
   "section_titles": {
     "animals": "THE DAY IN ANIMAL SCIENCE",
     "digest": "ALSO NOTED"
@@ -42,13 +45,25 @@
       "expansion_score_floor": 55
     }
   },
-  "hard_news_sections": ["animals"],
-  "counterpoint_required_sections": ["animals"],
-  "watch_required_sections": ["animals"],
-  "toc_sections": ["animals", "digest"],
+  "hard_news_sections": [
+    "animals"
+  ],
+  "counterpoint_required_sections": [
+    "animals"
+  ],
+  "watch_required_sections": [
+    "animals"
+  ],
+  "toc_sections": [
+    "animals",
+    "digest"
+  ],
   "closing_section": null,
   "header": {
-    "exec_summary_words": [250, 750],
+    "exec_summary_words": [
+      250,
+      750
+    ],
     "min_cross_references": 2,
     "cross_reference_label": "Cross-currents"
   },
@@ -58,7 +73,12 @@
     "per_article_max": 2,
     "max_total": 24,
     "require_license_line": true,
-    "weak_tokens": ["logo", "flag of", "headshot", "watermark"],
+    "weak_tokens": [
+      "logo",
+      "flag of",
+      "headshot",
+      "watermark"
+    ],
     "evidentiary_tokens": []
   },
   "rules": {
@@ -66,6 +86,7 @@
     "hn_target": 0,
     "min_assembled_bytes": 71680,
     "native_language_audit": false,
+    "forbid_first_person": true,
     "min_native_language_articles": 3,
     "watch_label": "Watch Next",
     "watch_heading_regex": "watch\\s+next\\b"
@@ -89,87 +110,178 @@
         "id": "bottom_line",
         "label": "Bottom line (2-3 sentence verdict)",
         "severity": "blocking",
-        "any_of": ["^[ \\t>]*\\*\\*bottom line:?\\*\\*"]
+        "any_of": [
+          "^[ \\t>]*\\*\\*bottom line:?\\*\\*"
+        ]
       },
       {
         "id": "confidence",
         "label": "Confidence label (High/Medium/Low with reason)",
         "severity": "blocking",
-        "any_of": ["^[ \\t>]*\\*\\*confidence:?\\*\\*:?[ \\t]*(?:high|medium|low)\\b"]
+        "any_of": [
+          "^[ \\t>]*\\*\\*confidence:?\\*\\*:?[ \\t]*(?:high|medium|low)\\b"
+        ]
       },
       {
         "id": "scientific_names",
         "label": "Italicised scientific binomial for each species discussed",
         "severity": "blocking",
-        "any_of": ["(?<![\\w*])\\*[A-Z][a-z]{2,} [a-z]{3,}(?: [a-z]{3,})?\\*(?![\\w*])"]
+        "any_of": [
+          "(?<![\\w*])\\*[A-Z][a-z]{2,} [a-z]{3,}(?: [a-z]{3,})?\\*(?![\\w*])"
+        ]
       },
       {
         "id": "taxonomy_status",
         "label": "Taxonomy & Status table (IUCN / CITES / range)",
         "severity": "warning",
-        "any_of": ["^\\|[^\\n]*\\b(?:IUCN|Red List)\\b[^\\n]*\\|", "^\\|[^\\n]*\\bCITES\\b[^\\n]*\\|"]
+        "any_of": [
+          "^\\|[^\\n]*\\b(?:IUCN|Red List)\\b[^\\n]*\\|",
+          "^\\|[^\\n]*\\bCITES\\b[^\\n]*\\|"
+        ]
       },
       {
         "id": "evidence_card",
         "label": "Evidence / study card",
         "severity": "warning",
-        "any_of": ["^#{2,4}[ \\t]*(?:the )?(?:evidence|study card|evidence card|evidence trail)", "\\*\\*(?:study|evidence) card"]
+        "any_of": [
+          "^#{2,4}[ \\t]*(?:the )?(?:evidence|study card|evidence card|evidence trail)",
+          "\\*\\*(?:study|evidence) card"
+        ]
       },
       {
         "id": "methods_limits",
         "label": "Methods & limits (what the evidence cannot show)",
         "severity": "warning",
-        "any_of": ["^#{2,4}[ \\t]*(?:methods|limits|limitations|what the (?:data|study|evidence))"]
+        "any_of": [
+          "^#{2,4}[ \\t]*(?:methods|limits|limitations|what the (?:data|study|evidence))"
+        ]
       },
       {
         "id": "doi",
         "label": "DOI for each study cited",
         "severity": "warning",
-        "any_of": ["\\b10\\.\\d{4,9}/[^\\s)\\]>\"'|]+"]
+        "any_of": [
+          "\\b10\\.\\d{4,9}/[^\\s)\\]>\"'|]+"
+        ]
       }
     ]
   },
   "technical_keywords": [
-    "phylogen", "genom", "haplotype", "mitochond", "mark-recapture", "telemetry", "gps collar",
-    "edna", "metabarcoding", "population viability", "life history", "allometr", "pharmacokinetic",
-    "seroprevalence", "serolog", "phenotyp", "trophic", "occupancy model", "bioacoustic",
-    "stable isotope", "radiocarbon", "cites appendix", "red list", "karyotype", "microbiome",
-    "transcriptom", "heritabilit", "demograph", "dispersal", "foraging"
+    "phylogen",
+    "genom",
+    "haplotype",
+    "mitochond",
+    "mark-recapture",
+    "telemetry",
+    "gps collar",
+    "edna",
+    "metabarcoding",
+    "population viability",
+    "life history",
+    "allometr",
+    "pharmacokinetic",
+    "seroprevalence",
+    "serolog",
+    "phenotyp",
+    "trophic",
+    "occupancy model",
+    "bioacoustic",
+    "stable isotope",
+    "radiocarbon",
+    "cites appendix",
+    "red list",
+    "karyotype",
+    "microbiome",
+    "transcriptom",
+    "heritabilit",
+    "demograph",
+    "dispersal",
+    "foraging"
   ],
-  "technical_sections": ["animals"],
-  "catalogs": ["sources.md", "animal-sources.md"],
+  "technical_sections": [
+    "animals"
+  ],
+  "catalogs": [
+    "sources.md",
+    "animal-sources.md"
+  ],
   "catalog_include_buckets": [
-    "ANIMAL", "WIRE SERVICES", "AGGREGATORS", "SCIENCE & HEALTH", "SPACE, CLIMATE",
-    "NATIVE-LANGUAGE", "AFRICA", "LATIN AMERICA", "SOUTH & SOUTHEAST ASIA", "EUROPEAN UNION", "TAIWAN"
+    "ANIMAL",
+    "WIRE SERVICES",
+    "AGGREGATORS",
+    "SCIENCE & HEALTH",
+    "SPACE, CLIMATE",
+    "NATIVE-LANGUAGE",
+    "AFRICA",
+    "LATIN AMERICA",
+    "SOUTH & SOUTHEAST ASIA",
+    "EUROPEAN UNION",
+    "TAIWAN"
   ],
   "source_credit_extra": {
-    "SCIENCE & HEALTH": ["animals", "digest"],
-    "SPACE, CLIMATE": ["animals", "digest"]
+    "SCIENCE & HEALTH": [
+      "animals",
+      "digest"
+    ],
+    "SPACE, CLIMATE": [
+      "animals",
+      "digest"
+    ]
   },
   "photos": {
-    "providers": ["wikimedia", "inaturalist", "openverse"],
-    "licenses": ["cc0", "pd", "cc-by", "cc-by-sa"],
+    "providers": [
+      "wikimedia",
+      "inaturalist",
+      "openverse"
+    ],
+    "licenses": [
+      "cc0",
+      "pd",
+      "cc-by",
+      "cc-by-sa"
+    ],
     "min_width": 1200,
-    "prefer_aspect": [1.2, 1.9],
+    "prefer_aspect": [
+      1.2,
+      1.9
+    ],
     "caption_template": "{description}. Photo: {creator}, {license}, via {provider} ({page_url})"
   },
   "conductor": {
-    "article_target": 10,
-    "article_min": 6,
-    "article_max": 12,
     "slate_candidates": 14,
     "digest_items": 6,
-    "article_words_target": 3500,
-    "article_words_floor": 1500,
     "max_parallel_articles": 2,
     "models": {
-      "classify": {"model": "haiku", "effort": "low"},
-      "slate": {"model": "opus", "effort": "medium"},
-      "article": {"model": "sonnet", "effort": "medium"},
-      "repair": {"model": "sonnet", "effort": "low"},
-      "header": {"model": "opus", "effort": "low"},
-      "digest": {"model": "sonnet", "effort": "low"},
-      "review": {"model": "claude-fable-5-1", "effort": "medium", "optional": true, "fallback": "opus"}
+      "classify": {
+        "model": "haiku",
+        "effort": "low"
+      },
+      "slate": {
+        "model": "opus",
+        "effort": "medium"
+      },
+      "article": {
+        "model": "sonnet",
+        "effort": "medium"
+      },
+      "repair": {
+        "model": "sonnet",
+        "effort": "low"
+      },
+      "header": {
+        "model": "opus",
+        "effort": "low"
+      },
+      "digest": {
+        "model": "sonnet",
+        "effort": "low"
+      },
+      "review": {
+        "model": "claude-fable-5-1",
+        "effort": "medium",
+        "optional": true,
+        "fallback": "opus"
+      }
     },
     "budget": {
       "max_cost_usd_per_run": 40.0,

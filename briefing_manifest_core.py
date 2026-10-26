@@ -830,6 +830,7 @@ def build_item_manifest(
         "counterpoint_rows": counterpoint_rows,
         "official_next_48h_sources": dedupe_preserve(official_watch_sources),
         "watch_next_48h": watch_entries,
+        "first_person": find_first_person(body) if EDITION.rules.get("forbid_first_person") else [],
         "native_language_sources": native_language_domains(
             [url for entry in sources for url in _URL_IN_ENTRY_RE.findall(entry)]
         ),
@@ -1281,6 +1282,14 @@ def evaluate_item_rules(
                     f"{prefix}: {len(unlicensed)} image caption(s) carry no licence/credit "
                     f"(CC BY / CC0 / public domain / press use ...): {unlicensed[0]!r}"
                 )
+    first_person = item.get("first_person") or []
+    if len(first_person) >= 3:
+        blocking.append(
+            f"{prefix}: written in the first person ({len(first_person)} instances, e.g. {first_person[0]!r}); "
+            "state source-access limits and derived figures impersonally"
+        )
+    elif first_person:
+        warnings.append(f"{prefix}: uses the first person ({first_person[0]!r})")
     if item["banned_topics"]:
         blocking.append(f"{prefix}: contains banned topic(s): {', '.join(item['banned_topics'])}")
     if item.get("editorial_boilerplate"):
@@ -1662,6 +1671,34 @@ IMAGE_LICENSE_RE = re.compile(
     r"open access|press (?:kit|use|release|image)|used with permission|licen[cs]ed|no known copyright|"
     r"u\.?s\.? (?:fish and wildlife|geological survey|government)|NOAA|NASA)\b"
 )
+
+
+_ROMAN_CONTEXT = r"(?<!Appendix )(?<!Appendices )(?<!Part )(?<!Annex )(?<!Class )(?<!Schedule )(?<!Group )(?<!Type )(?<!Phase )(?<!Stage )(?<!Category )(?<!Annex )(?<!List )"
+FIRST_PERSON_RE = re.compile(
+    rf"(?:{_ROMAN_CONTEXT}\bI\s+[a-z]{{2,}}|\bI['\u2019](?:m|ve|ll|d)\b|\b(?:my|me|we|our|ours|us)\b)"
+)
+
+
+def find_first_person(body: str) -> list[str]:
+    """Editorial first person ("I could not open...", "my subtraction") outside quotations and source lists.
+
+    Quoted speech, tables of sources, and the Primary Sources / Watch Next blocks are ignored; roman
+    numerals ("CITES Appendix I species") are not first person.
+    """
+    lines: list[str] = []
+    skipping = False
+    for line in body.splitlines():
+        if line.lstrip().startswith("#"):
+            skipping = line.lstrip("# ").strip().lower().startswith(("primary sources", "watch next"))
+        if skipping or line.lstrip().startswith(("![", "<!--")):
+            continue
+        lines.append(line)
+    text = re.sub(r'"[^"\n]{3,}"|\u201c[^\u201d\n]{3,}\u201d', " ", "\n".join(lines))
+    hits = []
+    for match in FIRST_PERSON_RE.finditer(text):
+        context = re.sub(r"\s+", " ", text[max(0, match.start() - 30): match.end() + 30]).strip()
+        hits.append(context)
+    return hits
 
 
 def extract_lede(body: str, *, limit: int = 600) -> str:

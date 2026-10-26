@@ -161,6 +161,8 @@ def start_run_attempt(date: str) -> dict[str, Any]:
         report["scheduled_log_path"] = prior["scheduled_log_path"]
     if prior.get("notes"):
         report["notes"] = list(prior["notes"])
+    if prior.get("usage"):  # a new attempt (or the first stage after the conductor's probe) must not erase what the day has spent
+        report["usage"] = prior["usage"]
     write_run_report(report)
     return report
 
@@ -217,6 +219,13 @@ def stage_prerequisites_satisfied(report: dict[str, Any], step: str) -> tuple[bo
     return True, None
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """Readers (the delivery gate, the dashboard, another stage) must never see a half-written run report."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def write_run_report(report: dict[str, Any]) -> Path:
     date = report["date"]
     path = run_report_path(date)
@@ -224,9 +233,9 @@ def write_run_report(report: dict[str, Any]) -> Path:
     report["artifact_paths"]["run_report"] = str(path)
     report["sha256"] = _merge_dict(report.get("sha256", {}), artifact_hashes_for(date))
     report["updated_at"] = iso_now()
-    path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _atomic_write(path, json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     report["sha256"]["run_report"] = file_sha256(path)
-    path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    _atomic_write(path, json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     refresh_health_dashboard()
     return path
 

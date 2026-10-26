@@ -132,6 +132,9 @@ variants = {{
   "medium": fx.make_article(story, words=2800, source_lines=fx.default_sources(urls)),
   "few_sources": fx.make_article(story, words=3700, source_lines=fx.default_sources()[:3]),
   "no_taxonomy": base.replace("IUCN Red List", "Status").replace("CITES", "Trade"),
+  "first_person": base.replace("### What happened\n", "### What happened\n\nI could not open the registry, so I treat the list as unconfirmed and my own division gives 62%.\n"),
+  "one_first_person": base.replace("### What happened\n", "### What happened\n\nThe totals are my own division of the two reported figures.\n"),
+  "roman_numerals": base.replace("### What happened\n", "### What happened\n\nThe species is on CITES Appendix I species lists, and Part I taxa are covered. The authors wrote \"I could not find any such record in the files we examined\" in the discussion.\n"),
 }}
 print(json.dumps({{k: rules(v) for k, v in variants.items()}}))
 '''
@@ -179,6 +182,13 @@ class AnimalValidatorTests(unittest.TestCase):
         self.assertEqual(self.result["medium"]["blocking"], [])
         self.assertTrue(any("soft word threshold" in w or "below the target" in w
                             for w in self.result["medium"]["nonblocking"] + self.result["medium"]["warnings"]))
+
+    def test_first_person_is_blocking_when_pervasive_and_ignores_roman_numerals_and_quotes(self) -> None:
+        self.assertIn("first person", self.blocking("first_person"))
+        self.assertEqual(self.result["one_first_person"]["blocking"], [])
+        self.assertTrue(any("first person" in w for w in self.result["one_first_person"]["warnings"]))
+        self.assertEqual(self.result["roman_numerals"]["blocking"], [])
+        self.assertFalse(any("first person" in w for w in self.result["roman_numerals"]["warnings"]))
 
     def test_source_minimum_and_taxonomy_warning(self) -> None:
         self.assertIn("source threshold", self.blocking("few_sources"))

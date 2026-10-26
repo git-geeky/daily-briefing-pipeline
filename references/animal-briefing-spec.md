@@ -6,7 +6,7 @@ Edition id: `animal` (`BRIEFING_EDITION=animal`). Config: `editions/animal.json`
 
 An expert. Assume fluency in zoology, ecology, evolutionary biology, conservation status systems (IUCN Red List categories and criteria, CITES appendices, ESA/EPBC/national listings), veterinary and One Health vocabulary, and basic statistics. Never define IUCN, apex predator, phylogeny, or p-value. Do not explain what a reader at this level already knows; spend the words on mechanism, design, effect size, uncertainty, prior literature, and what would change the conclusion.
 
-Voice: precise, sober, specific. Calibrated hedging ("suggests", "is consistent with", "demonstrates") that matches the study design. No anthropomorphism, no "amazing", no listicle rhythm, no padded transitions. Numbers carry units, sample sizes, intervals and years.
+Voice: precise, sober, specific, **impersonal**. Never write in the first person ("I could not open...", "my subtraction", "we"). State access limits and derived figures plainly instead: "The registry page returned HTTP 403, so status is taken from the press release"; "the ratio is computed here from the two totals". Calibrated hedging ("suggests", "is consistent with", "demonstrates") that matches the study design. No anthropomorphism, no "amazing", no listicle rhythm, no padded transitions. Numbers carry units, sample sizes, intervals and years.
 
 ## What gets covered (selection)
 

@@ -47,14 +47,15 @@ except ImportError:  # pragma: no cover
 EXIT_OK, EXIT_DEGRADED, EXIT_FAILED, EXIT_DISABLED, EXIT_USAGE, EXIT_DEFERRED = 0, 10, 20, 30, 2, 75
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "article_target": 10, "article_min": 6, "article_max": 12, "slate_candidates": 14, "digest_items": 6,
-    "article_words_target": 3500, "article_words_floor": 1500, "max_parallel_articles": 2,
-    "article_section": None, "digest_section": None,
+    "slate_candidates": 14, "digest_items": 6, "max_parallel_articles": 2,
+    "article_sections": None, "article_section": None, "digest_section": None, "article_min_total": None,
+    "section_briefs": {},
     "timezone": "Asia/Tokyo", "deadline_local": "11:30",
     "models": {
         "classify": {"model": "haiku", "effort": "low"}, "slate": {"model": "opus", "effort": "medium"},
         "article": {"model": "sonnet", "effort": "medium"}, "repair": {"model": "sonnet", "effort": "low"},
         "header": {"model": "opus", "effort": "low"}, "digest": {"model": "sonnet", "effort": "low"},
+        "closing": {"model": "opus", "effort": "medium"},
         "review": {"model": "opus", "effort": "medium", "optional": True},
     },
     "budget": {
@@ -64,7 +65,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     },
     "timeouts": {"article_s": 2400, "slate_s": 1200, "header_s": 600, "digest_s": 1500, "repair_s": 1500, "probe_s": 120, "idle_s": 600},
     "repairs_per_article": 2, "call_retries": 2, "retry_backoff_s": 20, "review_enabled": True,
-    "stage_timeout_s": {"assemble": 600, "validate": 600, "pdf": 900, "visual_qa": 900, "audit": 1800},
+    "stage_timeout_s": {"assemble": 600, "validate": 600, "pdf": 900, "visual_qa": 900, "audit": 1800, "images": 900},
     "lock_stale_minutes": 360, "fallback_on_refusal": "opus", "enabled": True, "wait_for_reset_minutes": 90,
 }
 
@@ -274,6 +275,7 @@ class Conductor:
         self.env = {**os.environ, "BRIEFING_EDITION": edition.edition_id, **(env or {})}
         self._stop = threading.Event()
         self._cost_lock = threading.Lock()
+        self._usage_lock = threading.Lock()
         self.last_rate_limit = llm.RateLimitInfo()
         self._load_runtime()
 
@@ -302,6 +304,27 @@ class Conductor:
         command = json.loads(alert_cmd) if alert_cmd else (self.edition.get("conductor.alert.command") or None)
         self.notifier = Notifier(generated / "alerts", command, self.runner)
         self.lock = FileLock(generated / f"{self.ctx.profile.artifact_stem}.conductor.lock", float(self.settings["lock_stale_minutes"]))
+
+    # ---- section plan ------------------------------------------------------------------
+    def plan(self) -> dict[str, dict[str, int]]:
+        """Content sections that receive per-story articles, with quotas from the edition's section rules."""
+        keys = self.settings.get("article_sections") or [self.article_section]
+        out: dict[str, dict[str, int]] = {}
+        for key in keys:
+            rule = self.edition.rule(key)
+            target = int(rule.get("target_count", 0))
+            out[key] = {"min": int(rule.get("min_count", 0)), "target": target, "max": int(rule.get("max_count", target) or target)}
+        return out
+
+    def total_target(self) -> int:
+        return sum(q["target"] for q in self.plan().values())
+
+    def total_min(self) -> int:
+        configured = self.settings.get("article_min_total")
+        return int(configured) if configured else sum(q["min"] for q in self.plan().values())
+
+    def section_of(self, story: dict[str, Any]) -> str:
+        return str(story.get("section") or self.article_section)
 
     def log(self, message: str) -> None:
         line = f"{datetime.now().isoformat(timespec='seconds')} {message}"
@@ -340,16 +363,20 @@ class Conductor:
         try:
             import run_reporting
 
-            run_reporting.record_usage(
-                self.date, stage, model=result.model_used or request.model, backend=self.backend.name,
-                input_tokens=result.input_tokens, output_tokens=result.output_tokens,
-                cache_read_tokens=result.cache_read_tokens, cache_creation_tokens=result.cache_creation_tokens,
-                cost_usd=result.cost_usd, duration_seconds=result.duration_s, ok=result.ok,
-                error=result.error_detail if not result.ok else None, label=request.label,
-            )
+            with self._usage_lock:  # parallel article workers share one run-report file
+                self._record_usage_locked(run_reporting, stage, request, result)
         except Exception as exc:  # noqa: BLE001 - accounting must never break a run
             self.state.event(f"usage accounting failed: {exc!r}")
         self.state.save()
+
+    def _record_usage_locked(self, run_reporting: Any, stage: str, request: llm.LLMRequest, result: llm.LLMResult) -> None:
+        run_reporting.record_usage(
+            self.date, stage, model=result.model_used or request.model, backend=self.backend.name,
+            input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+            cache_read_tokens=result.cache_read_tokens, cache_creation_tokens=result.cache_creation_tokens,
+            cost_usd=result.cost_usd, duration_seconds=result.duration_s, ok=result.ok,
+            error=result.error_detail if not result.ok else None, label=request.label,
+        )
 
     def check_budget(self, *, launching: bool = True) -> None:
         budget = self.settings["budget"]
@@ -467,7 +494,7 @@ class Conductor:
         self.state.mark("run", "deferred", reason=exc.reason, until=until)
         self.log(f"deferred: {exc.reason} (retry after {when})")
         done = self._finished_articles()
-        if self.past_deadline() and len(done) >= int(self.settings["article_min"]):
+        if self.past_deadline() and len(done) >= self.total_min():
             self.log("past the deadline with enough finished articles: shipping a smaller briefing")
             try:
                 return self._finish(degraded=True)
@@ -476,12 +503,12 @@ class Conductor:
         if self.past_deadline():
             self._alert_once("late", f"{self.edition.label}: no briefing yet for {self.date}",
                              f"Deferred ({exc.reason}) and past the {self.settings['deadline_local']} deadline with only "
-                             f"{len(done)} of {self.settings['article_min']} required articles finished.\n\n" + self.diagnosis())
+                             f"{len(done)} of {self.total_min()} required articles finished.\n\n" + self.diagnosis())
         return EXIT_DEFERRED
 
     def _on_failure(self, exc: StageFailed) -> int:
         done = self._finished_articles()
-        if len(done) >= int(self.settings["article_min"]) and exc.stage not in {"deliver", "finish"}:
+        if len(done) >= self.total_min() and exc.stage not in {"deliver", "finish"}:
             self.log("attempting degraded last-mile delivery")
             try:
                 return self._finish(degraded=True)
@@ -515,17 +542,22 @@ class Conductor:
     def _finish(self, *, degraded: bool) -> int:
         notes: list[str] = []
         articles = self._finished_articles()
-        if len(articles) < int(self.settings["article_min"]):
-            raise StageFailed("finish", f"only {len(articles)} finished article(s); minimum is {self.settings['article_min']}")
-        if degraded or len(articles) < int(self.settings["article_target"]):
-            notes.append(f"{len(articles)} of {self.settings['article_target']} target stories were finished")
+        if len(articles) < self.total_min():
+            raise StageFailed("finish", f"only {len(articles)} finished article(s); minimum is {self.total_min()}")
+        if len(articles) < self.total_target():
+            notes.append(f"{len(articles)} of {self.total_target()} target stories were finished")
+        for section, quota in self.plan().items():
+            have = sum(1 for a in articles if self.section_of(a["story"]) == section)
+            if have < quota["min"]:
+                notes.append(f"{self.edition.section_titles.get(section, section)}: {have} of the {quota['min']} minimum stories met the bar")
         self.stage_header(articles)
+        self.stage_closing(articles)
         articles, extra_notes = self.stage_assemble_validate(articles)
         notes.extend(extra_notes)
         self.stage_pdf()
         notes.extend(self.stage_review(articles))
         self.stage_deliver(articles, notes)
-        short = len(articles) < int(self.settings["article_target"])
+        short = len(articles) < self.total_target()
         return EXIT_DEGRADED if (degraded or short or any("dropped" in n for n in notes)) else EXIT_OK
 
     # ---- stage: preflight --------------------------------------------------------------
@@ -609,8 +641,17 @@ class Conductor:
 
     # ---- stage: slate ------------------------------------------------------------------
     def spec_text(self) -> str:
-        path = _HERE / "references" / f"{self.edition.edition_id}-briefing-spec.md"
-        return path.read_text(encoding="utf-8") if path.exists() else ""
+        references = _HERE / "references"
+        dedicated = references / f"{self.edition.edition_id}-briefing-spec.md"
+        if dedicated.exists():
+            return dedicated.read_text(encoding="utf-8")
+        parts = [(references / name).read_text(encoding="utf-8") for name in ("briefing-spec.md", "generation-spec.md") if (references / name).exists()]
+        return "\n\n---\n\n".join(parts)
+
+    def quota_text(self) -> str:
+        return "\n".join(
+            f"- {section} ({self.edition.section_titles.get(section, section)}): target {q['target']}, minimum {q['min']}, maximum {q['max']}"
+            for section, q in self.plan().items())
 
     def stage_slate(self) -> None:
         if self.state.done("slate") and Path(self.ctx.slate_path(self.date)).exists():
@@ -622,35 +663,56 @@ class Conductor:
         ingest_md = ingest_md_path.read_text(encoding="utf-8") if ingest_md_path.exists() else "(no headlines were harvested today; rely on search)"
         ingest = load_json(Path(self.ctx.ingest_path(self.date)), {"stats": {}})
         prior = self.prior_titles()
+        plan = self.plan()
         values = {
             "EDITION_LABEL": self.edition.label, "DATE": self.date, "DATE_HUMAN": human_date(self.date), "SPEC": self.spec_text(),
             "INGEST": ingest_md, "SOURCE_COUNT": ingest.get("stats", {}).get("sources_with_items", 0),
             "PRIOR_TITLES": "\n".join(f"- {t}" for t in prior) or "- (none)", "SLATE_CANDIDATES": self.settings["slate_candidates"],
+            "QUOTAS": self.quota_text(), "SECTION_BRIEFS": "\n".join(f"- {k}: {v}" for k, v in self.settings["section_briefs"].items()),
         }
         banned = lambda text: briefing_manifest.find_banned_topics(text, "")  # noqa: E731
-        report = None
+        multi = len(plan) > 1
+        report, raw = None, None
         for attempt in (1, 2):
             result = self.call("slate", self.prompt("slate", values), role="slate", tools=["WebSearch"], label="slate")
             if not result.ok:
                 raise StageFailed("slate", f"slate call failed ({result.error_kind}): {result.error_detail[:200]}")
             try:
-                report = slate_core.validate_slate(slate_core.extract_json(result.text), prior_titles=prior, banned_check=banned)
+                raw = slate_core.extract_json(result.text)
+                report = slate_core.validate_slate(
+                    raw, prior_titles=prior, banned_check=banned, sections=tuple(plan) if multi else (),
+                    default_section=None if multi else self.article_section)
             except ValueError as exc:
                 self.log(f"slate attempt {attempt}: unusable output ({exc})")
                 continue
-            if len(report.kept) >= int(self.settings["article_min"]):
+            if len(report.kept) >= self.total_min():
                 break
             self.log(f"slate attempt {attempt}: only {len(report.kept)} valid stories")
-            values["SPEC"] += f"\n\nNOTE: your previous answer had only {len(report.kept)} usable stories; return at least {self.settings['article_min'] + 4}."
-        if report is None or len(report.kept) < int(self.settings["article_min"]):
-            raise StageFailed("slate", f"could not obtain {self.settings['article_min']} valid stories")
-        selected, backups, notes = slate_core.select_slate(
-            report.kept, target=int(self.settings["article_target"]), minimum=int(self.settings["article_min"]),
-            maximum=int(self.settings["article_max"]))
+            values["SPEC"] += f"\n\nNOTE: your previous answer had only {len(report.kept)} usable stories; return at least {self.total_min() + 4}."
+        if report is None or len(report.kept) < self.total_min():
+            raise StageFailed("slate", f"could not obtain {self.total_min()} valid stories")
+        if multi:
+            selected, backups, notes = slate_core.select_by_sections(report.kept, plan)
+        else:
+            quota = plan[self.article_section]
+            selected, backups, notes = slate_core.select_slate(
+                report.kept, target=quota["target"], minimum=quota["min"], maximum=quota["max"])
         atomic_write(Path(self.ctx.slate_path(self.date)), json.dumps(
             {"selected": selected, "backups": backups, "dropped": report.dropped, "notes": notes}, indent=1, ensure_ascii=False) + "\n")
+        decisions = raw.get("no_update_decisions") if isinstance(raw, dict) else None
+        if decisions:
+            self._record_no_update_decisions(decisions)
         self.state.mark("slate", "done", selected=len(selected), backups=len(backups), dropped=len(report.dropped))
         self.log(f"slate: {len(selected)} selected, {len(backups)} backups, {len(report.dropped)} dropped; {'; '.join(notes) or 'balanced'}")
+
+    def _record_no_update_decisions(self, decisions: list[Any]) -> None:
+        """Beats with nothing to report (focus company, a watch-list person) are recorded, not padded; the validator reads them."""
+        pool_path = Path(self.paths.candidate_pool_path(self.date))
+        pool = load_json(pool_path, {}) or {}
+        clean = [d for d in decisions if isinstance(d, dict) and d.get("beat") and len(str(d.get("reason") or "").strip()) >= 40]
+        if clean:
+            pool["no_update_decisions"] = clean
+            atomic_write(pool_path, json.dumps(pool, indent=2, ensure_ascii=False) + "\n")
 
     def load_slate(self) -> dict[str, Any]:
         slate = load_json(Path(self.ctx.slate_path(self.date)))
@@ -661,6 +723,9 @@ class Conductor:
     # ---- stage: photos -----------------------------------------------------------------
     def stage_photos(self) -> None:
         if self.state.done("photos"):
+            return
+        if self.edition.image_mode != "per_article":
+            self.state.mark("photos", "done", skipped="edition does not use per-article photographs")
             return
         import photo_core
 
@@ -685,50 +750,58 @@ class Conductor:
     def article_meta_path(self, story_id: str) -> Path:
         return self.articles_dir / f"{story_id}.json"
 
-    def _finished_articles(self) -> list[dict[str, Any]]:
-        """Finished articles in slate order, each ``{'story': ..., 'path': ..., 'meta': ...}``."""
+    def _finished_articles(self, section: str | None = None) -> list[dict[str, Any]]:
+        """Finished articles ordered by section then slate rank, each ``{'story', 'path', 'meta'}``; capped per section."""
         slate = load_json(Path(self.ctx.slate_path(self.date)), None)
         if not slate:
             return []
-        by_id = {s["story_id"]: s for s in slate["selected"] + slate["backups"]}
-        out = []
-        for sid, story in by_id.items():
+        stories = slate["selected"] + slate["backups"]
+        order = {s["story_id"]: i for i, s in enumerate(stories)}
+        plan = self.plan()
+        section_order = {name: i for i, name in enumerate(plan)}
+        out: list[dict[str, Any]] = []
+        for story in stories:
+            sid = story["story_id"]
             meta = load_json(self.article_meta_path(sid), {})
             if meta.get("status") == "done" and self.article_path(sid).exists() and not meta.get("dropped"):
                 out.append({"story": story, "path": self.article_path(sid), "meta": meta})
-        order = {s["story_id"]: i for i, s in enumerate(slate["selected"] + slate["backups"])}
-        return sorted(out, key=lambda a: order[a["story"]["story_id"]])[: int(self.settings["article_max"])]
+        out.sort(key=lambda a: (section_order.get(self.section_of(a["story"]), 99), order[a["story"]["story_id"]]))
+        capped: list[dict[str, Any]] = []
+        counts: dict[str, int] = {}
+        for article in out:
+            name = self.section_of(article["story"])
+            if counts.get(name, 0) >= plan.get(name, {"max": 99})["max"]:
+                continue
+            counts[name] = counts.get(name, 0) + 1
+            capped.append(article)
+        return [a for a in capped if section is None or self.section_of(a["story"]) == section]
 
     def stage_articles(self) -> None:
         slate = self.load_slate()
-        target = int(self.settings["article_target"])
+        plan = self.plan()
         queue = list(slate["selected"])
-        backups = list(slate["backups"])
         attempted: set[str] = set()
-        rounds = 0
-        while rounds < 4:
-            rounds += 1
+        for round_no in range(1, 5):
             todo = [s for s in queue if s["story_id"] not in attempted]
             if not todo:
                 break
-            self.log(f"articles: round {rounds}, {len(todo)} stories")
-            outcomes = self._write_many(todo)
+            self.log(f"articles: round {round_no}, {len(todo)} stories")
+            self._write_many(todo)
             attempted.update(s["story_id"] for s in todo)
-            done = [o for o in outcomes if o.status == "done"]
-            have = len(self._finished_articles())
-            missing = target - have
-            if missing <= 0:
-                break
-            replacements = [b for b in backups if b["story_id"] not in attempted][:missing]
-            if not replacements:
-                break
-            self.log(f"articles: {missing} short of target; trying {len(replacements)} backup stories")
-            queue = replacements
-            _ = done
+            queue = []
+            for section, quota in plan.items():
+                missing = quota["target"] - len(self._finished_articles(section))
+                if missing <= 0:
+                    continue
+                replacements = [b for b in slate["backups"] if self.section_of(b) == section and b["story_id"] not in attempted][:missing]
+                if replacements:
+                    self.log(f"articles: {section} is {missing} short of target; trying {len(replacements)} backup stories")
+                    queue += replacements
         have = len(self._finished_articles())
-        self.state.mark("articles", "done", finished=have, target=target)
-        if have < int(self.settings["article_min"]):
-            raise StageFailed("articles", f"only {have} article(s) finished; minimum is {self.settings['article_min']}")
+        short = {sec: len(self._finished_articles(sec)) for sec, q in plan.items() if len(self._finished_articles(sec)) < q["min"]}
+        self.state.mark("articles", "done", finished=have, target=self.total_target(), short_sections=short)
+        if have < self.total_min():
+            raise StageFailed("articles", f"only {have} article(s) finished; minimum is {self.total_min()}")
 
     def _write_many(self, stories: list[dict[str, Any]]) -> list[ArticleOutcome]:
         workers = max(1, int(self.settings["max_parallel_articles"]))
@@ -747,7 +820,7 @@ class Conductor:
                     self.log(f"article {sid}: unexpected error {exc!r}")
                     outcomes.append(ArticleOutcome(sid, "failed", f"unexpected error: {exc!r}"))
         if first_error:
-            enough = len(self._finished_articles()) >= int(self.settings["article_min"])
+            enough = len(self._finished_articles()) >= self.total_min()
             if isinstance(first_error, Deferred) and enough:
                 wait_s = (first_error.until - self.now().timestamp()) if first_error.until else None
                 patience = float(self.settings["wait_for_reset_minutes"]) * 60
@@ -759,17 +832,18 @@ class Conductor:
                 raise first_error
         return outcomes
 
-    def check_article_text(self, markdown: str) -> tuple[list[str], dict[str, Any]]:
+    def check_article_text(self, markdown: str, section: str | None = None) -> tuple[list[str], dict[str, Any]]:
         """Run the edition's per-article rules on one article. Returns (blocking findings, manifest item)."""
         import briefing_manifest as manifest
 
+        section = section or self.article_section
         heading, _, body = markdown.partition("\n")
         audit = manifest.load_source_audit(self.date)
         item = manifest.build_item_manifest(
-            self.article_section, self.date, heading.lstrip("# ").strip(), body, prior_items=manifest.load_prior_items(self.date),
+            section, self.date, heading.lstrip("# ").strip(), body, prior_items=manifest.load_prior_items(self.date),
             image_metadata=manifest.load_image_metadata(self.date), source_audit=audit)
-        rules = manifest.SECTION_RULES[self.article_section]
-        result = manifest.evaluate_item_rules(self.article_section, item, rules, audit_available=bool(audit))
+        rules = manifest.SECTION_RULES[section]
+        result = manifest.evaluate_item_rules(section, item, rules, audit_available=bool(audit))
         return result["blocking"], item
 
     def write_article(self, story: dict[str, Any]) -> ArticleOutcome:
@@ -778,6 +852,7 @@ class Conductor:
         import provenance_core
 
         sid = story["story_id"]
+        section = self.section_of(story)
         existing = load_json(self.article_meta_path(sid), {})
         if existing.get("status") in {"done", "skipped"}:
             return ArticleOutcome(sid, existing["status"], existing.get("reason", ""), existing.get("words", 0))
@@ -786,7 +861,9 @@ class Conductor:
             "EDITION_LABEL": self.edition.label, "DATE": self.date, "DATE_HUMAN": human_date(self.date), "SPEC": self.spec_text(),
             "STORY_JSON": json.dumps({k: v for k, v in story.items() if k not in {"photo_allow_words"}}, indent=1, ensure_ascii=False),
             "PRIOR_TITLES": "\n".join(f"- {t}" for t in self.prior_titles()[:30]) or "- (none)",
-            "WORDS_TARGET": self.settings["article_words_target"], "STORY_ID": sid,
+            "WORDS_TARGET": int(self.edition.rule(section).get("min_words", 1500)), "STORY_ID": sid,
+            "SECTION": section, "SECTION_TITLE": self.edition.section_titles.get(section, section),
+            "SECTION_BRIEF": self.settings["section_briefs"].get(section, ""),
             "PRIOR_MARKER": f"; prior: {story['prior_story_id']}" if story.get("prior_story_id") else "",
         }
         outcome = ArticleOutcome(sid, "failed")
@@ -816,7 +893,7 @@ class Conductor:
         article = photo_core.insert_photos(article, self.photo_lines(sid))
 
         for round_no in range(int(self.settings["repairs_per_article"]) + 1):
-            blocking, item = self.check_article_text(article)
+            blocking, item = self.check_article_text(article, section)
             prov = provenance_core.check_article(
                 article, corpus, json_fetcher=self.json_fetcher, url_checker=self.url_checker, check_network=self.check_network)
             word_only = bool(blocking) and all("hard word floor" in b for b in blocking)
@@ -941,31 +1018,49 @@ class Conductor:
         return result["blocking"], item
 
     # ---- stage: header -----------------------------------------------------------------
+    def part_label(self, section: str) -> str:
+        """"PART II - AI NEWS" -> "Part II" (the cross-reference prefix the daily spec asks for); empty for other editions."""
+        match = re.match(r"(?i)^part\s+([ivx]+)\b", self.edition.section_titles.get(section, ""))
+        return f"Part {match.group(1).upper()}" if match else ""
+
+    def summaries_for(self, articles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        import article_tools_core as tools
+
+        out = []
+        for a in articles:
+            summary = tools.article_summary(a["path"].read_text(encoding="utf-8"), a["story"])
+            summary["part"] = self.part_label(self.section_of(a["story"]))
+            out.append(summary)
+        return out
+
     def stage_header(self, articles: list[dict[str, Any]]) -> None:
         import article_tools_core as tools
 
-        summaries = []
-        for a in articles:
-            summaries.append(tools.article_summary(a["path"].read_text(encoding="utf-8"), a["story"]))
+        summaries = self.summaries_for(articles)
         titles = [s["title"] for s in summaries]
         low, high = (int(v) for v in self.edition.header.get("exec_summary_words", [250, 750]))
         min_cross = int(self.edition.header.get("min_cross_references", 2))
+        cross_label = str(self.edition.header.get("cross_reference_label", "Cross-currents"))
         frame_date = human_date(self.date)
         prepared = getattr(self.ctx.profile, "prepared_by_line", "Prepared by Claude")
         frame = lambda middle: (f"# {self.edition.label}\n**{frame_date}** | {prepared}\n\n{middle.strip()}\n\n### Table of Contents\n\n"  # noqa: E731
                                 + "\n".join(f"{i}. {t}" for i, t in enumerate(titles, start=1)) + "\n")
         header_text, source = None, "model"
+        use_parts = any(s["part"] for s in summaries)
         if not self.past_deadline() and not self.state.state["stages"].get("header", {}).get("fallback"):
             try:
+                margin = int((high - low) * 0.15)
                 values = {
                     "EDITION_LABEL": self.edition.label, "DATE": self.date, "DATE_HUMAN": frame_date,
-                    "SUMMARIES": json.dumps(summaries, indent=1, ensure_ascii=False), "SUMMARY_LOW": max(low, 350),
-                    "SUMMARY_HIGH": min(high, 650), "MIN_CROSS": min_cross,
+                    "SUMMARIES": json.dumps(summaries, indent=1, ensure_ascii=False), "SUMMARY_LOW": low + margin,
+                    "SUMMARY_HIGH": high - margin, "MIN_CROSS": min_cross, "CROSS_LABEL": cross_label,
+                    "CROSS_FORMAT": ('Cross-reference: <part> - "<exact article title>" using the story\'s "part" value (for example Cross-reference: Part II - "Title")'
+                                     if use_parts else 'Cross-reference: "<exact article title>"'),
                 }
                 result = self.call("header", self.prompt("header", values), role="header", tools=[], label="header")
                 if result.ok:
                     middle, fixes = tools.repair_cross_references(result.text.strip(), titles)
-                    words = len(middle.split("### Cross-currents")[0].replace("## Executive Summary", "").split())
+                    words = len(middle.split(f"### {cross_label}")[0].replace("## Executive Summary", "").split())
                     refs = tools.extract_header_titles(middle)
                     if low <= words <= high and len(refs) >= min_cross and all(r in titles for r in refs):
                         header_text = frame(middle)
@@ -976,28 +1071,97 @@ class Conductor:
         if header_text is None:
             source = "fallback"
             header_text = tools.deterministic_header(label=self.edition.label, date_human=frame_date, prepared_by=prepared,
-                                                     summaries=summaries, summary_words=(low, high))
+                                                     summaries=summaries, summary_words=(low, high), cross_label=cross_label,
+                                                     min_cross=min_cross)
         atomic_write(Path(self.paths.fragment_path("header", self.date)), header_text)
         self.state.mark("header", "done", source=source, fallback=source == "fallback")
+
+    # ---- stage: closing analysis (editions with a closing section) ---------------------------
+    def stage_closing(self, articles: list[dict[str, Any]]) -> None:
+        closing = self.edition.closing_section
+        if not closing or "closing" not in {p.stem for p in self.prompts_dir.glob("*.md")}:
+            return
+        path = self.articles_dir / "closing.md"
+        if path.exists():
+            return
+        import article_tools_core as tools
+
+        story = {"story_id": "closing-analysis", "title": "Closing analysis", "prior_story_id": None}
+        summaries = self.summaries_for(articles)
+        for summary, article in zip(summaries, articles):
+            text = article["path"].read_text(encoding="utf-8")
+            summary["sources"] = re.findall(r"https?://[^\s)>\]]+", text.split("### Primary Sources")[-1])[:5]
+        values = {
+            "EDITION_LABEL": self.edition.label, "DATE": self.date, "DATE_HUMAN": human_date(self.date), "SPEC": self.spec_text(),
+            "SUMMARIES": json.dumps(summaries, indent=1, ensure_ascii=False),
+            "WORDS_TARGET": int(self.edition.rule(closing).get("min_words", 1200)),
+        }
+        text = None
+        if not self.past_deadline():
+            findings = ""
+            for attempt in (1, 2):
+                try:
+                    result = self.call("closing", self.prompt("closing", {**values, "FINDINGS": findings or "(none)"}), role="closing",
+                                       tools=[], label="closing", timeout_key="header_s")
+                except (Deferred, HumanActionNeeded):
+                    break
+                if not result.ok:
+                    break
+                try:
+                    candidate, _ = tools.normalize_article(result.text, story)
+                except ValueError:
+                    findings = "The output had no `## Title` heading."
+                    continue
+                blocking, _item = self._check_section_item(closing, candidate)
+                if not blocking:
+                    text = candidate
+                    break
+                findings = "\n".join(f"- {b}" for b in blocking)
+                self.log(f"closing attempt {attempt}: {'; '.join(blocking)[:200]}")
+        if text is None:
+            text = ("## Quality Failure: the closing analysis could not be produced to standard today\n\n"
+                    "The stories above stand on their own sources; no synthesis is offered rather than a padded one.\n")
+        atomic_write(path, text)
+        self.state.mark("closing", "done", fallback=text.startswith("## Quality Failure"))
 
     # ---- stage: assemble + validate ----------------------------------------------------
     def _write_fragments(self, articles: list[dict[str, Any]]) -> None:
         import article_tools_core as tools
 
         titles = self.edition.section_titles
-        body = [a["path"].read_text(encoding="utf-8") for a in articles]
-        atomic_write(Path(self.paths.fragment_path(self.article_section, self.date)),
-                     tools.compose_section(titles[self.article_section], body))
+        for section, quota in self.plan().items():
+            mine = [a for a in articles if self.section_of(a["story"]) == section]
+            bodies = [a["path"].read_text(encoding="utf-8") for a in mine]
+            if len(mine) < quota["min"] and quota["min"] > 0:
+                bodies.append(f"## Quality Failure: only {len(mine)} of the {quota['min']} minimum stories met the evidence bar for "
+                              f"{titles[section]} today\n\nA visible gap is reported instead of padding a weak article.\n")
+            fragment = tools.compose_section(titles[section], bodies) if bodies else f"# {titles[section]}\n"
+            atomic_write(Path(self.paths.fragment_path(section, self.date)), fragment)
         if self.digest_section:
             digest = load_json(self.articles_dir / "digest.json", {}).get("items", [])
             fragment = tools.compose_section(titles[self.digest_section], digest) if digest else f"# {titles[self.digest_section]}\n"
             atomic_write(Path(self.paths.fragment_path(self.digest_section, self.date)), fragment)
+        closing = self.edition.closing_section
+        if closing:
+            path = self.articles_dir / "closing.md"
+            body = path.read_text(encoding="utf-8") if path.exists() else (
+                "## Quality Failure: closing analysis was not produced\n\nNo synthesis was written for this run.\n")
+            atomic_write(Path(self.paths.fragment_path(closing, self.date)), tools.compose_section(titles[closing], [body]))
+
+    def _fetch_images(self) -> None:
+        """Single-image editions pick one validated source image after drafting (non-fatal: a failure marker is shipped)."""
+        if self.edition.image_mode != "single":
+            return
+        code, _output = self.run_script("fetch_briefing_images.py", timeout_key="images")
+        if code != 0:
+            self.log("image fetch did not complete; the briefing will carry an image-quality failure marker")
 
     def stage_assemble_validate(self, articles: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
         notes: list[str] = []
         dropped: list[str] = []
         for attempt in range(1, 4):
             self._write_fragments(articles)
+            self._fetch_images()
             code, output = self.run_script("assemble_briefing.py", timeout_key="assemble")
             if code != 0:
                 raise StageFailed("assemble", f"assembly failed (exit {code}): {output[-300:]}")
@@ -1011,11 +1175,11 @@ class Conductor:
             blocking = report.get("blocking_errors") or []
             offenders = {
                 a["story"]["story_id"] for a in articles
-                if any(e.startswith(f"{self.article_section}/{self._title_of(a)}:") for e in blocking)
+                if any(e.startswith(f"{self.section_of(a['story'])}/{self._title_of(a)}:") for e in blocking)
             }
             self.log(f"validation blocked ({len(blocking)} errors); offending articles: {sorted(offenders) or 'none'}")
             remaining = [a for a in articles if a["story"]["story_id"] not in offenders]
-            if offenders and len(remaining) >= int(self.settings["article_min"]) and attempt < 3:
+            if offenders and len(remaining) >= self.total_min() and attempt < 3:
                 for a in articles:
                     if a["story"]["story_id"] in offenders:
                         dropped.append(a["story"]["story_id"])
@@ -1051,7 +1215,7 @@ class Conductor:
     def stage_review(self, articles: list[dict[str, Any]]) -> list[str]:
         if not self.settings.get("review_enabled") or self.past_deadline() or self.dry_run:
             return []
-        if "review" not in self.settings["models"]:
+        if "review" not in self.settings["models"] or not (self.prompts_dir / "review.md").exists():
             return []
         import slate_core
 
@@ -1124,9 +1288,17 @@ class Conductor:
             for key, value in mapping.items():
                 part = part.replace(key, value)
             argv.append(part)
-        if not recipients and "--recipient" in argv:
-            index = argv.index("--recipient")
-            del argv[index:index + 2]
+        cleaned: list[str] = []
+        skip = False
+        for index, part in enumerate(argv):
+            if skip:
+                skip = False
+                continue
+            if part.startswith("-") and index + 1 < len(argv) and argv[index + 1] == "":
+                skip = True  # a flag whose value expanded to nothing (e.g. no recipients configured): drop both
+                continue
+            cleaned.append(part)
+        argv = cleaned
         for attempt in range(1, 4):
             code, output = self.runner(argv, env=dict(self.env), cwd=str(self.scripts_dir), timeout=900)
             self.log(f"deliver attempt {attempt}: exit={code}")

@@ -203,7 +203,11 @@ def validate_slate(
     prior_titles: list[str] | None = None,
     banned_check: Callable[[str], list[str]] | None = None,
     prior_similarity: float = 0.6,
+    sections: tuple[str, ...] = (),
+    default_section: str | None = None,
 ) -> SlateReport:
+    """Validate the slate model's answer. With ``sections`` (multi-section editions) every story must name a
+    valid ``section``; ``updates`` stories must be developments of an earlier item."""
     entries = raw.get("stories") if isinstance(raw, dict) else raw
     if not isinstance(entries, list):
         raise ValueError("slate must be a JSON array (or an object with a 'stories' array)")
@@ -227,6 +231,14 @@ def validate_slate(
         base, suffix = story_id, 2
         while story_id in used:
             story_id, suffix = f"{base}-{suffix}", suffix + 1
+        section = str(entry.get("section") or default_section or "").strip()
+        if sections and section not in sections:
+            if default_section and not entry.get("section"):
+                section = default_section
+            else:
+                reasons.append(f"unknown section {section!r}")
+        if section == "updates" and str(entry.get("novelty") or "").lower() != "development":
+            reasons.append("an Updates story must be a development of an earlier briefing item")
         if banned_check:
             flagged = banned_check(f"{title}. {entry.get('angle') or ''}")
             if flagged:
@@ -249,7 +261,7 @@ def validate_slate(
         if not queries:
             queries = [t["scientific"] for t in taxa if t["scientific"]] + [t["common"] for t in taxa if t["common"]]
         report.kept.append({
-            "story_id": story_id, "title": title, "rank": int(entry.get("rank") or position), "group": group,
+            "story_id": story_id, "title": title, "section": section, "rank": int(entry.get("rank") or position), "group": group,
             "region": str(entry.get("region") or "").strip(), "taxa": taxa, "angle": str(entry.get("angle") or "").strip(),
             "why_now": str(entry.get("why_now") or "").strip(), "novelty": novelty if novelty in {"new", "development"} else "new",
             "prior_story_id": entry.get("prior_story_id") or None,
@@ -328,6 +340,21 @@ def select_slate(
     return selected, backups, notes
 
 
+def select_by_sections(entries: list[dict], quotas: dict[str, dict[str, int]]) -> tuple[list[dict], list[dict], list[str]]:
+    """Multi-section selection: top ``target`` per section (thin material last); the rest are that section's backups."""
+    selected: list[dict] = []
+    backups: list[dict] = []
+    notes: list[str] = []
+    for section, quota in quotas.items():
+        pool = sorted([e for e in entries if e.get("section") == section], key=lambda e: (e["material"] == "thin", e["rank"]))
+        selected += pool[: quota["target"]]
+        backups += pool[quota["target"]:]
+        if len(pool) < quota["min"]:
+            notes.append(f"{section}: only {len(pool)} candidate(s) (minimum {quota['min']})")
+    return selected, backups, notes
+
+
 __all__ = [
-    "GROUPS", "SlateReport", "build_ingest", "extract_json", "ingest_markdown", "select_slate", "slugify", "validate_slate",
+    "GROUPS", "SlateReport", "build_ingest", "extract_json", "ingest_markdown", "select_by_sections", "select_slate", "slugify",
+    "validate_slate",
 ]

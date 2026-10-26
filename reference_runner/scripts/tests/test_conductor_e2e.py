@@ -48,6 +48,10 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertIn("Photo: Jane Doe, CC BY-SA 4.0, via Wikimedia Commons", text)
         self.assertNotIn("<!-- story:", text)
         self.assertEqual(text.count("Image Quality Failure"), 0)
+        # Token/cost accounting reached the run report for every model call, even with parallel writers.
+        self.assertEqual(result["accounting_errors"], [])
+        self.assertEqual(result["usage_calls"], sum(result["calls"].values()))
+        self.assertAlmostEqual(result["usage_cost"], result["spent"], places=2)
         for stage in ("audit", "ingest", "slate", "photos", "articles", "header", "validate", "pdf", "visual_qa", "deliver"):
             self.assertEqual(result["stages"][stage], "done", stage)
 
@@ -113,6 +117,28 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertEqual(second["calls"]["article"], 6, "only the six unfinished stories may be written on resume")
         self.assertEqual(len(second["articles_done"]), 10)
         self.assertTrue(second["delivered"])
+
+    def test_watchdog_finish_mode_delivers_what_an_interrupted_run_left_behind(self) -> None:
+        root = self.fresh()
+        first = run_harness("interrupted", root)
+        self.assertEqual(first["exit"], 75, first["events"])
+        self.assertFalse(first["delivered"])
+        self.assertEqual(len(first["articles_done"]), 10)
+        second = run_harness("interrupted", root, "--second-pass", "--finish")
+        self.assertEqual(second["exit"], 10, second["events"])
+        self.assertTrue(second["delivered"] and second["pdf_exists"])
+        self.assertNotIn("article", second["calls"], "finish mode must not draft anything")
+        self.assertNotIn("slate", second["calls"])
+
+    def test_watchdog_with_too_little_to_ship_raises_an_alert(self) -> None:
+        root = self.fresh()
+        first = run_harness("limit_midway", root, env={"E2E_LIMIT_AFTER": "3"})
+        self.assertEqual(first["exit"], 75)
+        second = run_harness("limit_midway", root, "--second-pass", "--finish", env={"E2E_LIMIT_AFTER": "3"})
+        self.assertEqual(second["exit"], 20, second["events"])
+        self.assertFalse(second["delivered"])
+        self.assertEqual(len(second["alerts"]), 1)
+        self.assertIn("fail-finish", second["alerts"][0])
 
     def test_limit_with_enough_finished_articles_ships_a_degraded_briefing_instead_of_waiting_all_day(self) -> None:
         result = run_harness("limit_partial", self.fresh(), env={"E2E_LIMIT_AFTER": "7"})

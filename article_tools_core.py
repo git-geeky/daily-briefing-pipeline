@@ -122,9 +122,16 @@ def article_summary(markdown: str, story: dict[str, Any] | None = None) -> dict[
     title = re.search(r"(?m)^##\s+(.+)$", markdown)
     bottom = re.search(r"(?im)^[ \t>]*\*\*bottom line:?\*\*:?[ \t]*(.+)$", markdown)
     conf = re.search(r"(?im)^[ \t>]*\*\*confidence:?\*\*:?[ \t]*((?:high|medium|low)\b.*)$", markdown)
+    bottom_text = bottom.group(1).strip() if bottom else ""
+    if not bottom_text:  # editions without a Bottom line block (daily): first prose paragraph, trimmed
+        for block in re.split(r"\n\s*\n", markdown):
+            text = block.strip()
+            if text and not text.startswith(("#", "|", "![", ">", "<!--", "- ", "*", "**")):
+                bottom_text = _trim_words(re.sub(r"\s+", " ", text), 55)
+                break
     return {
         "title": title.group(1).strip() if title else (story or {}).get("title", ""),
-        "bottom_line": bottom.group(1).strip() if bottom else "",
+        "bottom_line": bottom_text,
         "confidence": conf.group(1).strip() if conf else "",
         "group": (story or {}).get("group", "other"),
         "story_id": (story or {}).get("story_id", ""),
@@ -146,7 +153,8 @@ def _trim_words(text: str, limit: int) -> str:
 
 
 def deterministic_header(*, label: str, date_human: str, prepared_by: str, summaries: list[dict[str, Any]],
-                         summary_words: tuple[int, int] = (250, 750)) -> str:
+                         summary_words: tuple[int, int] = (250, 750), cross_label: str = "Cross-currents",
+                         min_cross: int = 2) -> str:
     """Executive summary assembled only from the articles' own titles and bottom lines."""
     low, high = summary_words
     paragraphs = [f"Today's briefing carries {len(summaries)} stories in depth. The bottom lines, in order:"]
@@ -169,29 +177,40 @@ def deterministic_header(*, label: str, date_human: str, prepared_by: str, summa
         regions = sorted({s["region"] for s in summaries if s["region"]})
         body += (f"\n\nBy taxonomic group the stories divide into {groups}. Stated confidence across the briefing: {confidence_text}."
                  + (f" Settings covered: {', '.join(regions)}." if regions else ""))
-    refs = _cross_current_lines(summaries)
+    refs = _cross_current_lines(summaries, minimum=min_cross)
     return (
         f"# {label}\n**{date_human}** | {prepared_by}\n\n## Executive Summary\n\n{body}\n\n"
-        f"### Cross-currents\n\n{refs}\n\n### Table of Contents\n\n"
+        f"### {cross_label}\n\n{refs}\n\n### Table of Contents\n\n"
         + "\n".join(f"{i}. {s['title']}" for i, s in enumerate(summaries, start=1))
         + "\n"
     )
 
 
-def _cross_current_lines(summaries: list[dict[str, Any]]) -> str:
+def _ref(item: dict[str, Any]) -> str:
+    prefix = f"{item['part']} - " if item.get("part") else ""
+    return f'Cross-reference: {prefix}"{item["title"]}"'
+
+
+def _cross_current_lines(summaries: list[dict[str, Any]], *, minimum: int = 2) -> str:
+    """Structural, true-by-construction connections: stories that share a taxonomic group or a section."""
+    lines: list[str] = []
     by_group: dict[str, list[dict[str, Any]]] = {}
     for item in summaries:
         by_group.setdefault(item["group"], []).append(item)
-    lines: list[str] = []
     for group, members in sorted(by_group.items(), key=lambda kv: -len(kv[1])):
-        if len(members) >= 2 and len(lines) < 4:
+        if len(members) >= 2 and group != "other" and len(lines) < 4:
             for member in members[:2]:
-                lines.append(f"- {len(members)} of today's stories concern {_GROUP_LABEL.get(group, group)}. "
-                             f'Cross-reference: "{member["title"]}"')
+                lines.append(f"- {len(members)} of today's stories concern {_GROUP_LABEL.get(group, group)}. {_ref(member)}")
+    by_part: dict[str, list[dict[str, Any]]] = {}
     for item in summaries:
-        if len(lines) >= 2:
+        by_part.setdefault(item.get("part") or "", []).append(item)
+    for part, members in sorted(by_part.items(), key=lambda kv: -len(kv[1])):
+        if part and len(members) >= 2 and len(lines) < max(minimum, 4):
+            lines.append(f"- {len(members)} stories sit in {part} today. {_ref(members[0])}")
+    for item in summaries:
+        if len(lines) >= minimum:
             break
-        lines.append(f"- Lead story. Cross-reference: \"{item['title']}\"")
+        lines.append(f"- Lead story. {_ref(item)}")
     return "\n".join(lines)
 
 

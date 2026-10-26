@@ -27,7 +27,7 @@ You have `WebFetch` and `WebSearch`. Everything you assert must trace to a page 
 
 # Writing rules
 
-- Expert voice. Precise, sober, specific. Calibrated verbs that match the study design. Numbers carry units, n, intervals and years. No anthropomorphism, no "amazing/stunning", no listicle rhythm.
+- Expert voice. Precise, sober, specific, **impersonal: no first person** ("I", "my", "we", "our"). Say what could not be verified in the passive or by naming the source ("The registry returned HTTP 403, so the status is taken from the press release"; "the ratio is computed here from the two totals"). Calibrated verbs that match the study design. Numbers carry units, n, intervals and years. No anthropomorphism, no "amazing/stunning", no listicle rhythm.
 - Separate finding, interpretation and speculation. Mark preprints and press-office claims as such; where a press release goes beyond its paper, say so.
 - Absolute dates (ISO or "26 October 2026"). Never "yesterday", "this week", "recently".
 - Italicise every scientific binomial (`*Genus species*`) in each section where it appears; give the authority and year in the Taxonomy table when taxonomy is contested.

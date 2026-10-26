@@ -178,5 +178,60 @@
   ],
   "catalogs": [
     "sources.md"
-  ]
+  ],
+  "conductor": {
+    "article_sections": [
+      "part1",
+      "part2",
+      "part3",
+      "part4",
+      "humaninterest",
+      "updates"
+    ],
+    "article_min_total": 12,
+    "slate_candidates": 32,
+    "digest_items": 0,
+    "max_parallel_articles": 2,
+    "timezone": "Asia/Tokyo",
+    "deadline_local": "13:00",
+    "review_enabled": false,
+    "models": {
+      "slate": {
+        "model": "opus",
+        "effort": "medium"
+      },
+      "article": {
+        "model": "sonnet",
+        "effort": "medium"
+      },
+      "repair": {
+        "model": "sonnet",
+        "effort": "low"
+      },
+      "header": {
+        "model": "opus",
+        "effort": "low"
+      },
+      "closing": {
+        "model": "opus",
+        "effort": "medium"
+      }
+    },
+    "budget": {
+      "max_cost_usd_per_run": 60.0,
+      "max_cost_usd_per_article": 3.5
+    },
+    "section_briefs": {
+      "part1": "General news and geopolitics: the biggest world news stories of the day, hard news with named sources and exact dates.",
+      "part2": "AI news: models, funding, regulation, employment, safety and technical breakthroughs. Benchmark and vendor claims get default skepticism.",
+      "part3": "Non-AI tech: cybersecurity, semiconductors, infrastructure, developer tools, open source. Cover the focus company whenever there is material movement; otherwise record a no-update decision.",
+      "part4": "Japan: national politics and economy, plus the home-region and arts beats named in the private coverage notes, when material. Watch-listed people named there are included on any substantive development; otherwise record a no-update decision.",
+      "humaninterest": "Human interest: acts of courage, unusual lives, small communities, scientific curiosities about people, philanthropy, ordinary people in extraordinary circumstances. Never sports, film/TV, music, celebrities, gaming or entertainment.",
+      "updates": "Updates: only prior-briefing stories that materially changed in the last 24 hours; empty is a valid answer."
+    },
+    "delivery": {
+      "subject_template": "Daily Intelligence Briefing (Claude) - {human_date}",
+      "recipients_env": "DAILY_BRIEFING_RECIPIENTS"
+    }
+  }
 }

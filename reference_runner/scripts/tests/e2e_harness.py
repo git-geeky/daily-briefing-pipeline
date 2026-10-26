@@ -145,6 +145,12 @@ conductor = cc.Conductor(
     edition=edition, date=DATE, scripts_dir=SCRIPTS, backend=llm.FakeBackend(script), photo_fetcher=UniqueCommons(),
     check_network=False, audit_fixture=audit_fixture, now=lambda: now, sleep=lambda s: None, settings_override=settings,
 )
+if scenario == "interrupted" and not second_pass:
+    # Simulate a run that drafted everything and then died before the last mile (power loss, killed task).
+    def _crash(self, *, degraded):
+        raise cc.Deferred("simulated interruption before the last mile")
+
+    cc.Conductor._finish = _crash
 code = conductor.run(finish_only="--finish" in sys.argv)
 
 gen = Path(conductor.generated_dir)
@@ -175,4 +181,10 @@ if pdf.exists():
     out["pdf_images"] = sum(len(page.images) for page in reader.pages)
 assembled = arch / f"{stem}-{DATE}.md"
 out["assembled_text"] = assembled.read_text(encoding="utf-8")[:200000] if assembled.exists() else ""
+import run_reporting  # noqa: E402
+
+usage = (run_reporting.load_run_report(DATE).get("usage") or {}).get("totals") or {}
+out["usage_calls"] = usage.get("calls")
+out["usage_cost"] = usage.get("cost_usd")
+out["accounting_errors"] = [e["message"] for e in conductor.state.state["events"] if "accounting failed" in e["message"]]
 print("E2E_RESULT " + json.dumps(out))

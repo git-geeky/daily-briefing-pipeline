@@ -831,6 +831,7 @@ def build_item_manifest(
         "official_next_48h_sources": dedupe_preserve(official_watch_sources),
         "watch_next_48h": watch_entries,
         "first_person": find_first_person(body) if EDITION.rules.get("forbid_first_person") else [],
+        "process_leaks": find_process_leaks(body) if EDITION.rules.get("forbid_first_person") else [],
         "native_language_sources": native_language_domains(
             [url for entry in sources for url in _URL_IN_ENTRY_RE.findall(entry)]
         ),
@@ -1285,6 +1286,12 @@ def evaluate_item_rules(
                     f"{prefix}: {len(unlicensed)} image caption(s) carry no licence/credit "
                     f"(CC BY / CC0 / public domain / press use ...): {unlicensed[0]!r}"
                 )
+    process_leaks = item.get("process_leaks") or []
+    if process_leaks:
+        blocking.append(
+            f"{prefix}: refers to the pipeline's own machinery ({process_leaks[0]!r}); name the source (the paper, the agency page, the "
+            "registry lookup) and state access limits plainly"
+        )
     first_person = item.get("first_person") or []
     if len(first_person) >= 3:
         blocking.append(
@@ -1702,6 +1709,27 @@ def find_first_person(body: str) -> list[str]:
         context = re.sub(r"\s+", " ", text[max(0, match.start() - 30): match.end() + 30]).strip()
         hits.append(context)
     return hits
+
+
+PROCESS_LEAK_RE = re.compile(
+    r"(?i)\bdossier\s+(?:copy|lookup|text|page|record)s?\b|\bin\s+the\s+dossier\b|\bthe\s+dossier\s+(?:states|gives|lists|shows|holds|carries|page)\b"
+    r"|\bfetched\s+by\s+(?:the\s+)?(?:script|pipeline)\b|\bscript[- ](?:fetched|lookup)\b|\b(?:the|this)\s+(?:pipeline|conductor)\b"
+)
+
+
+def find_process_leaks(body: str) -> list[str]:
+    """Mentions of the pipeline's own machinery ("the dossier copy of that page"). A reader sees sources and access limits, not
+    how the page reached the writer. Quotations and the source lists are ignored."""
+    lines: list[str] = []
+    skipping = False
+    for line in body.splitlines():
+        if line.lstrip().startswith("#"):
+            skipping = line.lstrip("# ").strip().lower().startswith(("primary sources", "watch next"))
+        if skipping or line.lstrip().startswith(("![", "<!--")):
+            continue
+        lines.append(line)
+    text = re.sub(r'"[^"\n]{3,}"|\u201c[^\u201d\n]{3,}\u201d', " ", "\n".join(lines))
+    return [re.sub(r"\s+", " ", text[max(0, m.start() - 30): m.end() + 30]).strip() for m in PROCESS_LEAK_RE.finditer(text)]
 
 
 def extract_lede(body: str, *, limit: int = 600) -> str:

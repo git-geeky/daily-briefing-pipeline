@@ -65,7 +65,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "section_briefs": {},
     "timezone": "Asia/Tokyo", "deadline_local": "11:30",
     "models": {
-        "classify": {"model": "haiku", "effort": "low"}, "slate": {"model": "sonnet", "effort": "medium"},
+        "classify": {"model": "haiku", "effort": "low"}, "slate": {"model": "opus", "effort": "medium"},
         "article": {"model": "sonnet", "effort": "medium"}, "repair": {"model": "sonnet", "effort": "low"},
         "header": {"model": "sonnet", "effort": "low"}, "digest": {"model": "sonnet", "effort": "low"},
         "closing": {"model": "sonnet", "effort": "medium"},
@@ -671,8 +671,9 @@ class Conductor:
         notes.extend(extra_notes)
         self.stage_pdf()
         notes.extend(self.stage_review(articles))
+        combined = self.stage_combine(notes)
         degraded_run = degraded or len(articles) < self.total_target() or any("dropped" in n for n in notes)
-        self.stage_deliver(articles, notes, degraded=degraded_run)
+        self.stage_deliver(articles, notes, degraded=degraded_run, combined=combined)
         return EXIT_DEGRADED if degraded_run else EXIT_OK
 
     # ---- stage: preflight --------------------------------------------------------------
@@ -1478,8 +1479,80 @@ class Conductor:
         return [f"reviewer flagged {len(high)} high-severity issue(s): " + "; ".join(
             f"{i.get('story_id')}: {str(i.get('issue'))[:140]}" for i in high[:5])] if high else []
 
+    # ---- stage: combine (editions that carry a sibling edition in front of them) -------------------
+    def edition_layout(self, edition_id: str) -> tuple[Path, str]:
+        """(root directory, artifact stem) of another edition, derived the way the runner profile derives them.
+        ``BRIEFING_<EDITION>_ROOT`` overrides the root (tests, unusual installs)."""
+        other = edition_core.load_edition(edition_id)
+        profile = other.extra.get("profile") or {}
+        own = self.edition.extra.get("profile") or {}
+        top = self.ctx.profile.briefing_root.parent if own.get("root_subdir") else self.ctx.profile.briefing_root
+        override = os.environ.get(f"BRIEFING_{edition_id.upper()}_ROOT")
+        root = Path(override) if override else (top / str(profile["root_subdir"]) if profile.get("root_subdir") else top)
+        runner = self.ctx.profile.runner_name
+        stem = f"{runner}-{profile['stem_suffix']}" if profile.get("stem_suffix") else f"{runner}-{edition_id}-briefing"
+        return root, stem
+
+    def _combined_marker_path(self) -> Path:
+        return self.generated_dir / f"{self.ctx.profile.artifact_stem}-{self.date}-combined.json"
+
+    def stage_combine(self, notes: list[str]) -> dict[str, Any] | None:
+        """Put the sibling edition's finished PDF (and email text) in front of this edition's. Never fatal: without the sibling,
+        this edition ships alone and says so; the marker tells the sibling it may send itself late."""
+        cfg = self.edition.get("conductor.combine")
+        if not cfg or self.dry_run:
+            return None
+        import pdf_merge_core
+
+        sibling_id = str(cfg["prepend_edition"])
+        sibling = edition_core.load_edition(sibling_id)
+        root, stem = self.edition_layout(sibling_id)
+        gen = root / "generated"
+        pdf, text_file, html_file = gen / f"{stem}-{self.date}.pdf", gen / f"{stem}-{self.date}-email.txt", gen / f"{stem}-{self.date}-email.html"
+        state = load_json(gen / f"{stem}-{self.date}-conductor.json", {}) or {}
+        reason = ""
+        if not pdf.exists():
+            run = (state.get("stages") or {}).get("run", {})
+            reason = f"its run was {run.get('status')}" if run.get("status") else ("its run reported nothing" if not state else "it had not finished")
+        combined_pdf = self.generated_dir / f"{self.ctx.profile.artifact_stem}-{self.date}-combined.pdf"
+        result: dict[str, Any] | None = None
+        if not reason:
+            body_text = text_file.read_text(encoding="utf-8") if text_file.exists() else ""
+            titles = re.findall(r"(?m)^\d+\.\s+(.+)$", body_text)
+            try:
+                summary = pdf_merge_core.combine_pdfs(
+                    [pdf_merge_core.Part(sibling.label, pdf, titles=titles[:14]),
+                     pdf_merge_core.Part(self.edition.label, Path(self.paths.pdf_path(self.date)), titles=self._daily_titles())],
+                    combined_pdf, heading=f"{sibling.label} and {self.edition.label}", date_human=human_date(self.date))
+                result = {"pdf": combined_pdf, "label": sibling.label, "summary": summary,
+                          "text": body_text, "html": html_file.read_text(encoding="utf-8") if html_file.exists() else "",
+                          "articles": (state.get("delivered") or {}).get("articles")}
+                self.log(f"combined briefing: {summary['pages']} pages ({sibling.label} first)")
+            except ValueError as exc:
+                reason = f"its PDF could not be merged ({exc})"
+        if result is None:
+            notes.append(f"{sibling.label} was not included today: {reason}. It will be sent on its own if it finishes later.")
+            self.log(f"combined briefing skipped: {reason}")
+        atomic_write(self._combined_marker_path(), json.dumps({"date": self.date, "included": result is not None, "reason": reason,
+                                                               "sibling": sibling_id}) + "\n")
+        return result
+
+    def _daily_titles(self) -> list[str]:
+        try:
+            return [t for t in (self._title_of(a) for a in self._finished_articles())][:30]
+        except Exception:  # noqa: BLE001 - the index page is a convenience
+            return []
+
+    def _shipped_without_me(self, partner_id: str) -> bool:
+        """True when ``partner_id`` (the edition that carries this one) already went out without this edition's section."""
+        root, stem = self.edition_layout(partner_id)
+        state = load_json(root / "generated" / f"{stem}-{self.date}-conductor.json", {}) or {}
+        marker = load_json(root / "generated" / f"{stem}-{self.date}-combined.json", {}) or {}
+        return bool(state.get("delivered")) and marker.get("included") is False
+
     # ---- stage: deliver ----------------------------------------------------------------
-    def stage_deliver(self, articles: list[dict[str, Any]], notes: list[str], degraded: bool = False) -> bool:
+    def stage_deliver(self, articles: list[dict[str, Any]], notes: list[str], degraded: bool = False,
+                      combined: dict[str, Any] | None = None) -> bool:
         import article_tools_core as tools
         import run_reporting
 
@@ -1492,20 +1565,46 @@ class Conductor:
                                                     notes=notes, digest_titles=digest)
         text_path = Path(self.ctx.email_body_path(self.date)).with_suffix(".txt")
         html_path = Path(self.ctx.email_body_path(self.date))
-        atomic_write(text_path, text)
+        atomic_write(text_path, text)  # the stand-alone bodies stay on disk: a carrying edition builds its email from them
         atomic_write(html_path, body_html)
         pdf = Path(self.paths.pdf_path(self.date))
+        subject_suffix = ""
+        if combined:
+            pdf = combined["pdf"]
+            subject_suffix = f" + {combined['label']}"
+            text = f"{combined['label'].upper()}\n{'=' * len(combined['label'])}\n{combined['text'].strip()}\n\n\n{self.edition.label.upper()}\n{'=' * len(self.edition.label)}\n{text}"
+            body_html = f"{combined['html']}\n<hr>\n{body_html}"
+            combined_text, combined_html = text_path.with_name(text_path.stem + "-combined.txt"), html_path.with_name(html_path.stem + "-combined.html")
+            atomic_write(combined_text, text)
+            atomic_write(combined_html, body_html)
+            text_path, html_path = combined_text, combined_html
         self.state.state["delivery_notes"] = notes
         if self.dry_run or not self.deliver_enabled:
             self.log("delivery skipped (dry run)")
             self.state.mark("deliver", "done", skipped=True)
             return True
+        carrier = self.edition.get("conductor.delivery.held_for")
+        if self.edition.get("conductor.delivery.standalone") is False and os.environ.get("BRIEFING_FORCE_STANDALONE") != "1":
+            if not (carrier and self._shipped_without_me(str(carrier))):
+                import run_reporting as _rr
+
+                self.state.state["delivered"] = {"at": datetime.now(timezone.utc).isoformat(), "articles": len(articles), "notes": notes,
+                                                 "held": f"carried inside the {carrier or 'combined'} briefing"}
+                self.state.mark("deliver", "done", held=True)
+                try:
+                    _rr.update_run_report(self.date, run_status="degraded" if degraded else "completed", delivery_status="held")
+                except Exception as exc:  # noqa: BLE001
+                    self.log(f"run report update failed: {exc!r}")
+                self.log(f"held {len(articles)} articles for the {carrier or 'combined'} briefing (no stand-alone email)")
+                return True
+            notes.append(f"the {carrier} briefing went out without this section, so it is sent on its own (late)")
+            subject_suffix = " (late)"
         command_json = os.environ.get("BRIEFING_DELIVER_COMMAND")
         command = json.loads(command_json) if command_json else self.edition.get("conductor.delivery.command")
         if not command:
             raise StageFailed("deliver", "no delivery command configured (set BRIEFING_DELIVER_COMMAND or conductor.delivery.command)")
         subject = self.edition.get("conductor.delivery.subject_template", "{label} - {human_date}").format(
-            label=self.edition.label, human_date=human_date(self.date))
+            label=self.edition.label, human_date=human_date(self.date)) + subject_suffix
         recipients_env = self.edition.get("conductor.delivery.recipients_env")
         recipients = os.environ.get(recipients_env or "", "")
         mapping = {"{date}": self.date, "{pdf}": str(pdf), "{body_text}": str(text_path), "{body_html}": str(html_path),

@@ -19,7 +19,7 @@ v2 replaces the model-as-orchestrator with a program (`conductor_core.py`) that 
 ## 2. Pipeline (per edition)
 
 ```
-preflight (limit probe)  ->  source audit  ->  ingest (headline harvest)  ->  slate (Sonnet + search)
+preflight (limit probe)  ->  source audit  ->  ingest (headline harvest)  ->  slate (Opus + search)
    -> photos (animal)  ->  per article: dossier (script fetch) -> Sonnet draft -> GBIF name/status check
       -> provenance gate -> repair rounds   (parallel x2)
    -> digest (animal; Sonnet, no tools, from script-fetched pages)  ->  header (Sonnet, deterministic fallback)
@@ -30,7 +30,9 @@ preflight (limit probe)  ->  source audit  ->  ingest (headline harvest)  ->  sl
 
 Every stage writes its result and is skipped on re-run, so a deferred or killed run **resumes** where it stopped. Model calls are `claude -p --output-format stream-json --safe-mode --permission-prompts none`, so no prompt can hang the run and the user's CLAUDE.md, hooks and MCP servers do not bloat context.
 
-Script first, subscription second. Everything an HTTP client can do is done by script before or after a model call: the source audit and headline harvest, photograph search and licence checks, fetching each story's source pages and paper records (Europe PMC, Crossref), GBIF accepted-name and IUCN-category lookups, and the number, quotation, DOI and URL checks. The model writes. All stages default to Sonnet; Opus is used only as the one-shot fallback when a call is refused, and the Fable adversarial review is off (`review_enabled`). The dossier needs the network from the machine running the conductor; where a page cannot be fetched (bot-blocked, script-rendered) the writer is told so and opens it with `WebFetch`.
+Script first, subscription second. Everything an HTTP client can do is done by script before or after a model call: the source audit and headline harvest, photograph search and licence checks, fetching each story's source pages and paper records (Europe PMC, Crossref), GBIF accepted-name and IUCN-category lookups, and the number, quotation, DOI and URL checks. The model writes. Everything the model writes defaults to Sonnet. The one exception is the slate (one call a day, the point where a poor choice spoils the whole briefing), which runs on Opus; Opus is also the one-shot fallback when a call is refused. The Fable adversarial review is off (`review_enabled`). The dossier needs the network from the machine running the conductor; where a page cannot be fetched (bot-blocked, script-rendered) the writer is told so and opens it with `WebFetch`.
+
+**One combined briefing.** The animal edition builds its PDF and email text as usual but does not email them (`conductor.delivery.standalone: false`). The daily edition, which starts later, puts the animal PDF in front of its own behind a one-page index with bookmarks (`<stem>-<date>-combined.pdf`), prepends the animal summary to its email, and sends that single message to the daily recipients. If the animal PDF is missing or unreadable the daily briefing goes out alone, says so in its editor's notes, and writes `<daily stem>-<date>-combined.json` with `included: false`; if the animal edition finishes afterwards it then sends itself on its own, marked "(late)", to the animal recipients. Set `BRIEFING_FORCE_STANDALONE=1` to make the animal edition always email itself (for example while testing it by itself).
 
 Guarantees worth knowing:
 
@@ -70,7 +72,7 @@ None of the Windows or aiserver steps could be executed from the cloud session t
    The pip step installs `tzdata`, which Windows needs for time zones (without it the conductor falls back to fixed offsets for Asia/Tokyo and UTC only). The launcher logs the pipeline revision at the start of every run.
 2. **Claude login and models.** `claude auth status` must show the account. `ANTHROPIC_DEFAULT_OPUS_MODEL` still decides what `opus` means. The animal review uses `claude-fable-5-1` with an Opus fallback; Fable needs 30-day retention enabled and refuses some biology content, which is handled (the review is advisory and skippable).
 3. **aiserver.** Update `/home/agent/briefing-pipeline/deliver_core.py` to this version (adds `--edition`, `--body-text-file`, `--body-html-file`, multi-recipient, per-edition-and-date receipts, verified TLS, retries). If the existing install imports `private_config.py`, copy that file next to it; this version also runs without it (no private overlay then). The conductor always passes `--subject` and, when a recipients file exists, `--recipient`, so no `editions.animal` block is required in `delivery-config.json`; if you add one, its `recipients` are only the fallback when no recipient is passed. The app-password path stays as it is. Delivery must stay on this path (never the Gmail connector: wrong account).
-4. **Recipients.** Create `%USERPROFILE%\.briefing\animal-recipients.txt` with the owner's address and the animal-briefing recipient(s), comma- or newline-separated. Optionally `daily-recipients.txt` the same way (otherwise the delivery config's default recipient applies). Keep both out of git.
+4. **Recipients.** The combined briefing goes to `%USERPROFILE%\.briefing\daily-recipients.txt` (comma- or newline-separated; without the file the delivery config's default recipient applies). Add anyone who should receive the whole thing there; remember that includes the daily intelligence section. `animal-recipients.txt` is used only when the animal edition sends itself (late fallback, or `BRIEFING_FORCE_STANDALONE=1`). Keep both files out of git.
 5. **Dry runs, in this order:**
    ```powershell
    .\windows\Run-Briefing.ps1 -Edition animal -WhatIf          # prints the command, writes nothing
@@ -85,7 +87,7 @@ None of the Windows or aiserver steps could be executed from the cloud session t
    | animal | 06:30 | every 30 min until 11:30 | 11:30 | 11:45 |
    | daily | 12:30 | every 30 min until 17:30 | 17:30 | 17:45 |
 
-   The editions are staggered so they never share one five-hour usage window. Keep each watchdog after its edition's `conductor.deadline_local`. Tasks are registered **disabled** unless `-Enable` is given; nothing runs until you enable them.
+   The animal task produces its PDF but does not email it; the 12:30 daily task sends the combined briefing. The editions are staggered so they never share one five-hour usage window. Keep each watchdog after its edition's `conductor.deadline_local`. Tasks are registered **disabled** unless `-Enable` is given; nothing runs until you enable them.
 7. **Retire duplicates.** The legacy `\ClaudeCode\Claude-DailyBriefing` task is already disabled; leave it. `briefing-runner-flags.json` currently has `use_codex_for_scheduled_tasks: true`: decide whether the Codex runner should keep sending a second daily briefing. The flags file only gates the legacy launchers, not the conductor.
 
 ## 5. Operating it
@@ -105,7 +107,7 @@ To rerun a day from scratch, delete that day's `*-conductor.json` and the `*-art
 
 * The conductor reads five-hour and seven-day utilisation from the CLI's own `rate_limit_event`. Defaults (edit `conductor.budget` in the edition file): defer a run that *starts* above 80% (five-hour) or 90% (seven-day); stop launching new articles above 92%; cap a run at `max_cost_usd_per_run` and an article at `max_cost_usd_per_article` (API-equivalent dollars; your plan is not billed per token, but the figure is a good relative meter).
 * A limit with at least the minimum number of finished articles ships a partial briefing unless the reset is within 90 minutes, in which case the run waits and completes.
-* To spend less: lower `article_sections` targets or `max_parallel_articles`. The defaults are already Sonnet everywhere with the review off; to spend more on quality, move `slate`, `header` or `closing` to `opus` in `conductor.models`, or set `review_enabled: true` (Fable review, Opus fallback). `conductor.dossier.enabled: false` returns the writer to fetching its own sources.
+* To spend less: lower `article_sections` targets or `max_parallel_articles`. The defaults are Sonnet for everything but the slate, with the review off; to spend less, move `slate` to `sonnet`; to spend more on quality, move `header` or `closing` to `opus` in `conductor.models`, or set `review_enabled: true` (Fable review, Opus fallback). `conductor.dossier.enabled: false` returns the writer to fetching its own sources.
 
 ### Measured cost and time (one live sample each, extrapolated; treat as an estimate)
 
@@ -118,8 +120,11 @@ Measured in the build environment against the real CLI and network on 2026-10-26
 | One article (Sonnet, medium, fetch + search) | ~140 s, 9.5k output tokens | $0.28 |
 | One repair round (Sonnet, low) | ~40 s | $0.12-0.13 |
 | Header (Opus, low, no tools) | seconds | $0.07 |
+| One article with the script-built dossier (Sonnet, medium; new fossil species; 3 of 4 sources read, paper record and GBIF lookup by script), including one repair round | 165 s, 2,185 words, 21 of 21 numbers verified from fetched text | $0.34 |
 
-Extrapolation for a full animal run: about $5-7 and 35-45 minutes (audit 6 min, slate 3, photos 2, ten articles two at a time ~20, digest, header, assemble/validate/PDF ~5). A full daily run (21 stories + closing) is about $8-11 and 50-70 minutes. Your plan is not billed per token, but the account's five-hour window moved by roughly three percentage points per article-sized job in the sample, so **do not run both editions in the same five-hour window**: schedule the animal edition early (06:30) and the daily at least five hours later (the old daily time, around 12:30-13:00 JST, works). The conductor's own utilisation check will defer rather than overrun, but staggering avoids the deferral. The old design spent an unknown multiple of this in a single Opus session at maximum effort, which is what hit the monthly limits.
+The dossier did **not** make an article measurably cheaper: the earlier article without it cost $0.28 plus a $0.12 repair, the dossier article $0.34 in total, which is within the noise of different stories. Its value is verification (verbatim page text, paper abstracts and funders, registry facts), not savings. The savings come from using Sonnet for header, closing and digest, a digest that needs no tools, and the Fable review being off.
+
+Extrapolation for a full animal run (measured before the Sonnet defaults; the slate is still Opus, header and digest are now cheaper): about $5-7 and 35-45 minutes (audit 6 min, slate 3, photos 2, ten articles two at a time ~20, digest, header, assemble/validate/PDF ~5). A full daily run (21 stories + closing) is about $8-11 and 50-70 minutes. Your plan is not billed per token, but the account's five-hour window moved by roughly three percentage points per article-sized job in the sample, so **do not run both editions in the same five-hour window**: schedule the animal edition early (06:30) and the daily at least five hours later (the old daily time, around 12:30-13:00 JST, works). The conductor's own utilisation check will defer rather than overrun, but staggering avoids the deferral. The old design spent an unknown multiple of this in a single Opus session at maximum effort, which is what hit the monthly limits.
 
 ### Troubleshooting
 
@@ -138,7 +143,7 @@ Extrapolation for a full animal run: about $5-7 and 35-45 minutes (audit 6 min, 
 
 ## 6. What was and was not verified
 
-Verified in the build environment (cloud Linux, real `claude` CLI and real network): 322 automated tests (66 skipped by design: they need the legacy runner scripts) including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; one **real** Sonnet article through the real validators and provenance checker (including a real repair round that caught a paraphrase inside quotation marks, and a real repair that removed first-person narration without losing content); a **real** source audit, headline ingest and Opus slate for the animal edition on the day's news; a real Opus header; the real `claude -p` stream format, usage and rate-limit fields; the live Wikimedia, iNaturalist and Openverse photo providers.
+Verified in the build environment (cloud Linux, real `claude` CLI and real network): 334 automated tests (66 skipped by design: they need the legacy runner scripts) including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; one **real** Sonnet article through the real validators and provenance checker (including a real repair round that caught a paraphrase inside quotation marks, and a real repair that removed first-person narration without losing content); a **real** source audit, headline ingest and Opus slate for the animal edition on the day's news; a real Opus header; the real `claude -p` stream format, usage and rate-limit fields; the live Wikimedia, iNaturalist and Openverse photo providers.
 
 The script-built dossier and the GBIF checks are verified against fakes and unit tests only; they have not yet been run end to end against live pages in a full article. Not verified, and marked untested in the scripts: everything on the Windows desktop (PowerShell launchers, Task Scheduler registration, `Invoke-RemoteBash`/scp path), the aiserver deployment of the new `deliver_core.py`, a full real ten-article run, the real digest, daily closing and Fable review calls, any real run of the daily edition, and the experimental Codex backend. Treat the first week as a burn-in: run with `-NoDeliver`, read the PDFs, and watch `-Diagnose`.
 

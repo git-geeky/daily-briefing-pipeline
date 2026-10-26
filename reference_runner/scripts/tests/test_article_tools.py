@@ -138,6 +138,8 @@ variants = {{
   "few_sources": fx.make_article(story, words=3700, source_lines=fx.default_sources()[:3]),
   "no_taxonomy": base.replace("IUCN Red List", "Status").replace("CITES", "Trade"),
   "first_person": base.replace("### What happened\n", "### What happened\n\nI could not open the registry, so I treat the list as unconfirmed and my own division gives 62%.\n"),
+  "process_leak": base.replace("### What happened\n", "### What happened\n\nThe dossier copy of that page is dated 22 October, and the status is unconfirmed at the time of the dossier lookup.\n"),
+  "dossier_in_a_quote": base.replace("### What happened\n", "### What happened\n\nThe agency wrote \"the dossier copy of the file was submitted to the regulator in March\" in its notice.\n"),
   "one_first_person": base.replace("### What happened\n", "### What happened\n\nThe totals are my own division of the two reported figures.\n"),
   "roman_numerals": base.replace("### What happened\n", "### What happened\n\nThe species is on CITES Appendix I species lists, and Part I taxa are covered. The authors wrote \"I could not find any such record in the files we examined\" in the discussion.\n"),
 }}
@@ -194,6 +196,10 @@ class AnimalValidatorTests(unittest.TestCase):
         self.assertTrue(any("first person" in w for w in self.result["one_first_person"]["warnings"]))
         self.assertEqual(self.result["roman_numerals"]["blocking"], [])
         self.assertFalse(any("first person" in w for w in self.result["roman_numerals"]["warnings"]))
+
+    def test_references_to_the_pipelines_own_machinery_are_blocking_but_quoted_text_is_not(self) -> None:
+        self.assertIn("pipeline's own machinery", self.blocking("process_leak"))
+        self.assertEqual(self.result["dossier_in_a_quote"]["blocking"], [])
 
     def test_source_minimum_and_taxonomy_warning(self) -> None:
         self.assertIn("source threshold", self.blocking("few_sources"))

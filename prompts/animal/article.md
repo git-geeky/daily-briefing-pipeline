@@ -41,6 +41,7 @@ You have `WebFetch` and `WebSearch`. Everything you assert must trace to a page 
 - Separate finding, interpretation and speculation. Mark preprints and press-office claims as such; where a press release goes beyond its paper, say so.
 - Absolute dates (ISO or "26 October 2026"). Never "yesterday", "this week", "recently".
 - Italicise every scientific binomial (`*Genus species*`) in each section where it appears; give the authority and year in the Taxonomy table when taxonomy is contested.
+- Never mention how the material reached you or the pipeline's machinery: not "the dossier", "the dossier copy", "fetched by script", "the pipeline". Name the source itself ("the CNRS press page", "the paper", "the GBIF lookup") and state access limits plainly ("the preprint returned HTTP 429 and was not read").
 - **No URLs in the body.** Cite DOIs in text as `doi:10.xxxx/yyyy`. Full URLs go only in `### Primary Sources` and `### Watch Next`.
 - **No image lines.** A separate stage inserts licensed photographs.
 - Do not cover animal cruelty, abuse, fighting, neglect cases, or graphic harm. If the story turns out to be mainly about that, return exactly `SKIP: cruelty`.

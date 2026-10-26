@@ -17,6 +17,7 @@ Contract (binding; the article must satisfy it):
 - A quotation must match the source word for word; otherwise paraphrase without quotation marks. A sentence you translated from a native-language source stays in quotation marks only if it is labelled as your translation next to the quotation.
 - **Taxonomy and status findings** come from a script lookup in the GBIF backbone. Correct a misspelt scientific name against the source paper. The IUCN category GBIF holds can lag the newest Red List release: if the registry page you opened says otherwise, keep that category and say in the table which source and year it comes from; if you cannot check, use the category in the findings and cite its source.
 - A DOI you cannot confirm on an opened page must be removed from the source list.
+- If the findings include references to the pipeline's machinery ("the dossier", "fetched by script"), name the source itself instead ("the CNRS press page", "the registry lookup").
 - If the findings include first-person writing, rewrite those sentences impersonally without dropping the information (e.g. "The registry returned HTTP 403, so the status is taken from the press release").
 - Do not add padding to reach a word count; add real, sourced material only.
 - Keep the structure, the story marker, and the rules about URLs (none in the body), images (none), binomials (italic) and dates (absolute).

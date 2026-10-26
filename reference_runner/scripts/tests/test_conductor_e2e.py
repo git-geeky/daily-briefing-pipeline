@@ -204,6 +204,25 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertGreaterEqual(len(result["articles_done"]), 6)
 
 
+    def test_by_default_the_animal_briefing_is_held_for_the_daily_briefing_and_not_emailed(self) -> None:
+        result = run_harness("held", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertIsNone(result["deliver_args"], "no stand-alone email may go out")
+        self.assertIn("held", result["delivered_info"])
+        self.assertTrue(result["pdf_exists"])
+        self.assertEqual(result["report_run_status"], "completed")
+        self.assertEqual(result["email_files"], ["claude-animal-briefing-2026-10-26-email.html", "claude-animal-briefing-2026-10-26-email.txt"],
+                         "the bodies stay on disk for the daily briefing to carry")
+
+    def test_if_the_daily_briefing_went_out_without_it_the_animal_briefing_sends_itself_late(self) -> None:
+        result = run_harness("late_standalone", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        args = result["deliver_args"]
+        self.assertIsNotNone(args)
+        self.assertTrue(args[args.index("--subject") + 1].endswith("(late)"), args)
+        self.assertTrue(any("sent on its own (late)" in n for n in result["notes"]), result["notes"])
+        self.assertNotIn("held", result["delivered_info"])
+
     def test_script_fetched_dossier_reaches_the_writer_and_its_text_counts_as_opened_source(self) -> None:
         result = run_harness("dossier_quote", self.fresh())
         self.assertEqual(result["exit"], 0, result["events"])

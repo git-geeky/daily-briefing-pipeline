@@ -258,7 +258,7 @@
         "effort": "low"
       },
       "slate": {
-        "model": "sonnet",
+        "model": "opus",
         "effort": "medium"
       },
       "article": {
@@ -289,6 +289,8 @@
       "max_cost_usd_per_article": 4.0
     },
     "delivery": {
+      "standalone": false,
+      "held_for": "daily",
       "subject_template": "The Animal Science Briefing - {human_date}",
       "recipients_env": "ANIMAL_BRIEFING_RECIPIENTS"
     }

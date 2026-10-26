@@ -1,0 +1,93 @@
+"""Combined-briefing PDF: index page, part order, bookmarks, page ranges, failure on unreadable parts."""
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from _shared_imports import REPO_ROOT  # noqa: F401
+
+import pdf_merge_core as merge  # noqa: E402
+
+
+def make_pdf(path: Path, pages: int, label: str) -> Path:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    pdf = canvas.Canvas(str(path), pagesize=A4)
+    for i in range(pages):
+        pdf.drawString(60, 780, f"{label} body page {i + 1}")
+        pdf.showPage()
+    pdf.save()
+    return path
+
+
+class CombineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        self.animal = make_pdf(self.dir / "animal.pdf", 4, "ANIMAL")
+        self.daily = make_pdf(self.dir / "daily.pdf", 6, "DAILY")
+
+    def combine(self, **kwargs):
+        parts = [merge.Part("The Animal Science Briefing", self.animal, titles=["Numbats rebound in Dryandra", "Québec bullhead melanoma 日本"], note="2 of 10 target stories"),
+                 merge.Part("The Daily Intelligence Briefing", self.daily, titles=["Story A", "Story B"])]
+        return merge.combine_pdfs(parts, self.dir / "combined.pdf", heading="Today's briefings", date_human="Sunday, October 25, 2026", **kwargs)
+
+    def test_parts_follow_the_index_in_order_with_correct_page_ranges(self) -> None:
+        from pypdf import PdfReader
+
+        summary = self.combine()
+        reader = PdfReader(str(self.dir / "combined.pdf"))
+        self.assertEqual(summary["pages"], 1 + 4 + 6)
+        self.assertEqual([p["first_page"] for p in summary["parts"]], [2, 6])
+        self.assertIn("ANIMAL body page 1", reader.pages[1].extract_text())
+        self.assertIn("DAILY body page 1", reader.pages[5].extract_text())
+        index_text = reader.pages[0].extract_text()
+        self.assertIn("Pages 2-5 of this file", index_text)
+        self.assertIn("Pages 6-11 of this file", index_text)
+        self.assertIn("Numbats rebound in Dryandra", index_text)
+        self.assertIn("2 of 10 target stories", index_text)
+
+    def test_bookmarks_name_each_part_and_non_latin_titles_do_not_break_the_index(self) -> None:
+        from pypdf import PdfReader
+
+        self.combine()
+        outline = [item.title for item in PdfReader(str(self.dir / "combined.pdf")).outline if not isinstance(item, list)]
+        self.assertEqual(outline, ["Index", "The Animal Science Briefing", "The Daily Intelligence Briefing"])
+        self.assertIn("Quebec bullhead melanoma ?", PdfReader(str(self.dir / "combined.pdf")).pages[0].extract_text())
+
+    def test_metadata_title_and_no_leftover_temp_files(self) -> None:
+        from pypdf import PdfReader
+
+        self.combine()
+        self.assertEqual(PdfReader(str(self.dir / "combined.pdf")).metadata.title, "Today's briefings")
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["animal.pdf", "combined.pdf", "daily.pdf"])
+
+    def test_a_long_index_that_needs_two_pages_prints_correct_ranges(self) -> None:
+        parts = [merge.Part("Big part", self.animal, titles=[f"Article title number {i} with some extra words to fill the line" for i in range(120)]),
+                 merge.Part("Second", self.daily)]
+        summary = merge.combine_pdfs(parts, self.dir / "long.pdf", heading="H", date_human="D")
+        self.assertGreaterEqual(summary["index_pages"], 2)
+        self.assertEqual(summary["parts"][0]["first_page"], summary["index_pages"] + 1)
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(self.dir / "long.pdf"))
+        first = summary["parts"][0]["first_page"]
+        self.assertIn("ANIMAL body page 1", reader.pages[first - 1].extract_text())
+
+    def test_an_unreadable_part_is_an_error_not_a_silent_omission(self) -> None:
+        (self.dir / "broken.pdf").write_bytes(b"not a pdf at all")
+        with self.assertRaises(ValueError) as caught:
+            merge.combine_pdfs([merge.Part("Broken", self.dir / "broken.pdf")], self.dir / "x.pdf", heading="H", date_human="D")
+        self.assertIn("Broken", str(caught.exception))
+        self.assertFalse((self.dir / "x.pdf").exists())
+
+    def test_nothing_to_combine_is_an_error(self) -> None:
+        with self.assertRaises(ValueError):
+            merge.combine_pdfs([], self.dir / "x.pdf", heading="H", date_human="D")
+
+
+if __name__ == "__main__":
+    unittest.main()

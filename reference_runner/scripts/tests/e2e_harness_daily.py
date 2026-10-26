@@ -99,8 +99,30 @@ deliver_log = root / "deliver-args.json"
 deliver_script = root / "fake_deliver.py"
 deliver_script.write_text("import json, sys\nfrom pathlib import Path\nPath(sys.argv[1]).write_text(json.dumps(sys.argv[2:]))\nprint('Email sent')\n", encoding="utf-8")
 os.environ["BRIEFING_DELIVER_COMMAND"] = json.dumps([sys.executable, str(deliver_script), str(deliver_log), "--pdf", "{pdf}", "--date", "{date}",
-                                                     "--edition", "{edition}", "--subject", "{subject}", "--recipient", "{recipients}"])
+                                                     "--edition", "{edition}", "--body-text-file", "{body_text}", "--body-html-file", "{body_html}",
+                                                     "--subject", "{subject}", "--recipient", "{recipients}"])
 os.environ.pop("DAILY_BRIEFING_RECIPIENTS", None)
+
+if scenario in {"combined", "combined_corrupt"}:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    animal_gen = root / "animal" / "generated"
+    animal_gen.mkdir(parents=True, exist_ok=True)
+    animal_pdf = animal_gen / f"claude-animal-briefing-{DATE}.pdf"
+    if scenario == "combined_corrupt":
+        animal_pdf.write_bytes(b"this is not a pdf")
+    else:
+        sheet = canvas.Canvas(str(animal_pdf), pagesize=A4)
+        for n in range(3):
+            sheet.drawString(60, 780, f"ANIMAL SAMPLE PAGE {n + 1}")
+            sheet.showPage()
+        sheet.save()
+    (animal_gen / f"claude-animal-briefing-{DATE}-email.txt").write_text(
+        "The Animal Science Briefing - Monday, October 26, 2026\n\n2 stories in depth:\n\n1. Numbats rebound in Dryandra\n   Bottom line text.\n\n2. A second animal story\n", encoding="utf-8")
+    (animal_gen / f"claude-animal-briefing-{DATE}-email.html").write_text("<h2>The Animal Science Briefing</h2><ol><li>Numbats rebound in Dryandra</li></ol>", encoding="utf-8")
+    (animal_gen / f"claude-animal-briefing-{DATE}-conductor.json").write_text(json.dumps(
+        {"date": DATE, "edition": "animal", "delivered": {"held": "carried inside the daily briefing", "articles": 2}}), encoding="utf-8")
 
 conductor = cc.Conductor(
     edition=edition, date=DATE, scripts_dir=SCRIPTS, backend=llm.FakeBackend(script), runner=runner, check_network=False,
@@ -120,11 +142,26 @@ out = {
     "notes": conductor.state.state.get("delivery_notes"), "events": [e["message"] for e in conductor.state.state["events"]][-30:],
     "repair_findings": [p.split("# What failed")[1].split("# Instructions")[0] for p in prompts.get("repair", [])],
     "header_source": conductor.state.state["stages"].get("header", {}).get("source"),
+    "combined_marker": json.loads(conductor._combined_marker_path().read_text()) if conductor._combined_marker_path().exists() else None,
     "closing_fallback": conductor.state.state["stages"].get("closing", {}).get("fallback"),
     "assembled_text": assembled.read_text(encoding="utf-8") if assembled.exists() else "",
     "deliver_args": json.loads(deliver_log.read_text()) if deliver_log.exists() else None,
     "validation": json.loads((gen / f"{stem}-{DATE}-validation.json").read_text(encoding="utf-8")) if (gen / f"{stem}-{DATE}-validation.json").exists() else None,
 }
+if out["deliver_args"]:
+    args = out["deliver_args"]
+    out["email_text"] = Path(args[args.index("--body-text-file") + 1]).read_text(encoding="utf-8")
+    out["email_html"] = Path(args[args.index("--body-html-file") + 1]).read_text(encoding="utf-8")
+    sent_pdf = Path(args[args.index("--pdf") + 1])
+    out["sent_pdf_name"] = sent_pdf.name
+    if sent_pdf.exists():
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(sent_pdf))
+        out["sent_pdf_pages"] = len(reader.pages)
+        out["sent_pdf_page1"] = reader.pages[0].extract_text()
+        out["sent_pdf_page2"] = reader.pages[1].extract_text() if len(reader.pages) > 1 else ""
+        out["daily_pdf_pages"] = len(PdfReader(str(pdf)).pages) if pdf.exists() else None
 if out["validation"]:
     out["validation"] = {k: out["validation"].get(k) for k in ("blocking_errors", "warnings")}
 import run_reporting  # noqa: E402

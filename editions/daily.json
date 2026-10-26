@@ -197,7 +197,7 @@
     "review_enabled": false,
     "models": {
       "slate": {
-        "model": "sonnet",
+        "model": "opus",
         "effort": "medium"
       },
       "article": {
@@ -228,6 +228,9 @@
       "part4": "Japan: national politics and economy, plus the home-region and arts beats named in the private coverage notes, when material. Watch-listed people named there are included on any substantive development; otherwise record a no-update decision.",
       "humaninterest": "Human interest: acts of courage, unusual lives, small communities, scientific curiosities about people, philanthropy, ordinary people in extraordinary circumstances. Never sports, film/TV, music, celebrities, gaming or entertainment.",
       "updates": "Updates: only prior-briefing stories that materially changed in the last 24 hours; empty is a valid answer."
+    },
+    "combine": {
+      "prepend_edition": "animal"
     },
     "delivery": {
       "subject_template": "Daily Intelligence Briefing (Claude) - {human_date}",

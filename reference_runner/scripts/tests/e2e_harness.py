@@ -152,6 +152,16 @@ os.environ["BRIEFING_DELIVER_COMMAND"] = json.dumps([sys.executable, str(deliver
                                                      "--edition", "{edition}", "--body-text-file", "{body_text}", "--body-html-file", "{body_html}",
                                                      "--subject", "{subject}", "--recipient", "{recipients}"])
 os.environ["ANIMAL_BRIEFING_RECIPIENTS"] = "a@example.com,b@example.com"
+if scenario not in {"held", "late_standalone"}:
+    os.environ["BRIEFING_FORCE_STANDALONE"] = "1"  # the edition normally rides inside the daily briefing; most scenarios test the stand-alone path
+else:
+    daily_root = root / "daily-sibling"
+    os.environ["BRIEFING_DAILY_ROOT"] = str(daily_root)
+    (daily_root / "generated").mkdir(parents=True, exist_ok=True)
+    if scenario == "late_standalone":
+        (daily_root / "generated" / f"claude-daily-briefing-{DATE}-conductor.json").write_text(
+            json.dumps({"date": DATE, "edition": "daily", "delivered": {"articles": 21}}), encoding="utf-8")
+        (daily_root / "generated" / f"claude-daily-briefing-{DATE}-combined.json").write_text(json.dumps({"included": False, "reason": "it had not finished"}), encoding="utf-8")
 
 now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)  # 05:00 JST on the briefing date
 if scenario == "past_deadline":
@@ -236,6 +246,8 @@ out = {
     "repair_prompts": [p.split("# What failed")[1].split("# Instructions")[0] for p in prompts.get("repair", [])],
     "header_source": conductor.state.state["stages"].get("header", {}).get("source"),
     "run_status": conductor.state.state["stages"].get("run", {}).get("status"),
+    "delivered_info": conductor.state.state.get("delivered"),
+    "email_files": sorted(p.name for p in gen.glob("*-email.*")),
     "digest_tools": digest_tools,
     "article_prompts": prompts.get("article", [])[:3],
     "dossier_files": sorted(p.name for p in conductor.articles_dir.glob("*.dossier*.json")),

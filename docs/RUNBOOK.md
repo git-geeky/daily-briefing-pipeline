@@ -38,6 +38,8 @@ Guarantees worth knowing:
 
 * **Never silent.** Disabled, deferred past the deadline, needs-a-human (login, org limit, spend limit) and hard failures all write `generated\alerts\ALERT-*.txt` and, when `BRIEFING_ALERT_COMMAND` is set, email it. The watchdog task raises an alert if there is nothing to ship.
 * **Honest depth.** Articles aim for 3,500 words (animal) only when distinct material exists; the three-band floors block below 1,500. A story that cannot honestly reach the floor is replaced from the backup list, never padded.
+* **Quality over count (animal edition).** *Unread sources do not factor in*: a source the writer could not open is not cited, not listed and not mentioned (no "the paper was not read"); if the sources it did read are strong, the article is written from them. *A Low-confidence article is never written*: when the Confidence line says Low (including "Low to medium"), the draft is dropped before any repair is paid for (`conductor.skip_low_confidence`) and the story is replaced. Replacement order: solid animal-science reserves, then **Human Interest** stories (people and animals; a separate prompt; at most three; only ever used to fill a gap; no heading when none are needed), then thin reserves. If nothing good is left the briefing is simply shorter (animal minimum is now 3; below that the animal part is not sent). The thresholds are in `editions/animal.json`.
+* **Sources that cannot be reached are tracked, then retired or replaced** (`source_health_core.py`; state `research-vault/source-health.json`, daily report `generated/*-source-health.md`). A failing catalog source goes *under watch* with the dates and kinds of failure and is followed until it answers again (then forgotten). It is **retired**, meaning no longer fetched or counted against the audit, when the failure is permanent in kind: hard paywall or login wall (HTTP 402, or a login wall with no headlines) on 3 separate days; page gone (404/410, name no longer resolves) on 5 days over a week; refuses automated readers (403/429/challenge) on 14 days over three weeks; anything else (timeouts, 5xx, empty pages) on 10 days over two weeks. Only distinct audit days count, and a day on which more than 40% of all sources failed counts for nothing (a bad network day or a sandbox's blocked IP range retires nothing). A retired source's role is covered by other catalog sources of the same bucket, language and region (`substitutes`); where there are none it is removed and listed under "no substitute" in the report. A retired source is probed again every 30 days and reinstated the first time it answers. The catalog files are never edited: retirement lives in the state file (`BRIEFING_SOURCE_HEALTH=0` switches it off).
 * **Provenance gate.** Numbers, quotations, DOIs and URLs in each article are checked against what the writer actually saw (`provenance_core.py`; best-effort, see below). Invented quotations and non-resolving DOIs trigger a targeted repair; if they survive, the story is replaced. How strict it is:
   * *Evidence excludes the writer's own words.* The `Web search results for query: "..."` line and the `prompt:` a redirect notice hands back are stripped from tool results (`llm_backend_core.strip_tool_echo`), so searching for an invented quotation cannot make it "verify".
   * *Quotations are verified against page text the script fetched* (the dossier). A quotation found only in a `WebFetch` **answer** (a small model's summary of a page) is reported as `summary_only`; one is tolerated and noted, three trigger a repair.
@@ -66,6 +68,7 @@ Guarantees worth knowing:
 | Run state, log, usage | `<root>\generated\*-conductor.json`, `*-conductor.log`, `*-run.json` (`usage` rollup by stage and model) |
 | Alerts | `<root>\generated\alerts\` (files older than 30 days are pruned) |
 | Quality trend | `<root>\generated\quality-history.jsonl` |
+| Source health (watch list, retired sources, substitutes) | `research-vault\source-health.json`; readable report `<root>\generated\*-source-health.md`; print it with `py -3 source_health_core.py <path-to-state>` |
 | Windows entry points | `windows\*.ps1` |
 
 `<root>` is `Documents\Daily-Briefings` (daily) and `Documents\Daily-Briefings\animal` (animal).
@@ -160,7 +163,7 @@ Extrapolation for a full animal run (measured before the Sonnet defaults; the sl
 
 ## 6. What was and was not verified
 
-**Verified in the build environment** (cloud Linux, real `claude` CLI, real network, no email sent, no Windows desktop, no aiserver): 431 automated tests in the reference runner (67 skipped by design) and 4 in the shared-core suite, including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; and **four full live runs** (two per edition) on 2026-10-26:
+**Verified in the build environment** (cloud Linux, real `claude` CLI, real network, no email sent, no Windows desktop, no aiserver): 453 automated tests in the reference runner (67 skipped by design) and 4 in the shared-core suite, including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; and **four full live runs** (two per edition) on 2026-10-26:
 
 | Run | What happened | Cost (API-equivalent) |
 |---|---|---|
@@ -204,5 +207,5 @@ Three reviewers with no stake in the design attacked the finished pipeline: oper
 
 ## 7. Maintenance
 
-* Quarterly: re-check the animal catalog (`references/animal-sources.md`): dead domains, hijacked sites (one compromised site was found during the build), new national agencies. Liveness evidence in the meta file dates from 2026-10-26.
+* Quarterly: re-check the animal catalog (`references/animal-sources.md`): hijacked sites (one compromised site was found during the build), new national agencies. Dead and hard-paywalled sources now retire themselves (see "Sources that cannot be reached"); what needs a person is the report's **"retired with no substitute in the catalog"** list: find a different source for each (same language and region) and add it to the catalog. Liveness evidence in the meta file dates from 2026-10-26.
 * Weekly: skim the review file (`*-review.json`) and the per-article `flags` in `archive\*-articles-<date>\*.json` for repeated provenance problems.

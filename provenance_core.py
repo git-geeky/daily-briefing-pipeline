@@ -219,8 +219,8 @@ def _corpus_forms(int_part: str, frac: str | None, tail: str) -> set[str]:
 def _is_checkable(int_part: str, frac: str | None, tail: str, context_before: str) -> bool:
     digits = int_part.replace(",", "")
     has_unit = bool(tail.strip())
-    if not frac and not has_unit and len(digits) == 4 and digits[:2] in {"18", "19", "20"}:
-        return False  # a year
+    if not frac and not has_unit and len(digits) == 4 and "," not in int_part and digits[:2] in {"15", "16", "17", "18", "19", "20"}:
+        return False  # a year, including a taxon authority's ("Linnaeus, 1758"); "1,950 animals" is a count and is checked
     if not frac and not has_unit and len(digits) < 2:
         return False
     if not frac and not has_unit and int(digits) < 10:

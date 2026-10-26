@@ -91,6 +91,8 @@ def script(request: llm.LLMRequest):
             for entry, topic in zip(extras, topics):  # titles must differ from the chosen ones or the repeat check rightly drops them
                 entry["title"] = f"Reserve story on {topic} in a monitored population"
             return result_for(json.dumps(extras))
+        if scenario in {"low_conf_human_fill", "low_conf_human_fill_overflow"}:
+            return result_for(json.dumps(fx.make_slate_json(13) + fx.make_human_interest_json(4)))
         return result_for(json.dumps(fx.make_slate_json(13)))
     if stage in {"article", "repair"}:
         if stage == "article":
@@ -105,6 +107,17 @@ def script(request: llm.LLMRequest):
             "story_id": re.search(r"<!-- story: ([a-z0-9-]+)", request.prompt.split("# Current article")[1]).group(1),
             "title": re.search(r"(?m)^## (.+)$", request.prompt.split("# Current article")[1]).group(1), "prior_story_id": None}
         sid = story["story_id"]
+        if scenario.startswith("low_conf") and stage == "article":
+            number = int(sid.rsplit("-", 1)[1])
+            low_from = {"low_conf_replaced": None, "low_conf_human_fill": 5, "low_conf_human_fill_overflow": 5, "low_conf_ship_fewer": 6}[scenario]
+            if sid.startswith("human-story"):
+                if scenario == "low_conf_human_fill_overflow" and number >= 2:
+                    return result_for("SKIP: low_confidence")  # a human-interest story can also fail; the next one is tried
+                return result_for(fx.make_human_interest_article(story, words=WORDS))
+            low = sid == "fixture-story-2" if low_from is None else number >= low_from
+            confidence = "Low to medium" if low and number % 2 else ("Low" if low else "Medium")
+            return result_for(fx.make_article(story, words=WORDS, source_lines=fx.default_sources(catalog), confidence=confidence),
+                              corpus=clean_for(story))
         if scenario == "limit_in_repair" and stage == "repair" and not second_pass and sid == "fixture-story-2":
             return llm.LLMResult(ok=False, error_kind="usage_limit", error_detail="You've hit your session limit · resets 4:30pm (Asia/Tokyo)",
                                  reset_hint=datetime(2026, 10, 26, 7, 30, tzinfo=timezone.utc).timestamp())
@@ -216,6 +229,8 @@ if scenario in {"dossier", "dossier_quote", "taxonomy_typo"}:
     web_fetcher = FakeGbifWeb({f"https://example.org/{kind}-{i}": html_bytes(page) for i in range(14) for kind in ("paper", "agency")})
 
 settings = {"slate_reserves": 4 if scenario == "slate_topup" else 3, "review_enabled": True, "models": {"review": {"model": "opus", "effort": "low", "optional": True}}}
+if not scenario.startswith("low_conf"):
+    settings["article_min_total"] = 6  # the deferral and deadline scenarios are written around a six-article minimum; the edition's own is 3
 conductor = cc.Conductor(
     edition=edition, date=DATE, scripts_dir=SCRIPTS, backend=llm.FakeBackend(script), photo_fetcher=UniqueCommons(), web_fetcher=web_fetcher,
     check_network=False, audit_fixture=audit_fixture, now=lambda: clock["now"], sleep=lambda s: None, settings_override=settings,

@@ -72,6 +72,8 @@ def rebuild_section_text(section: str, text: str, accepted_indices: list[int]) -
     if not section_title:
         return "\n\n".join(kept_blocks).rstrip() + "\n"
     if not kept_blocks:
+        if EDITION.rule(section).get("omit_when_empty"):
+            return ""  # a fill-in section with nothing to fill shows no heading
         return f"# {section_title}\n"
     return f"# {section_title}\n\n" + "\n\n".join(kept_blocks).rstrip() + "\n"
 

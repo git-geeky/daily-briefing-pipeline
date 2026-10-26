@@ -267,6 +267,10 @@ class StrictNumberTests(unittest.TestCase):
         self.assertGreaterEqual(len(report.unmatched_numbers), 3)
         self.assertTrue(report.needs_repair())
 
+    def test_years_including_taxon_authority_years_are_not_figures_but_comma_counts_are(self) -> None:
+        self.assertEqual(self.numbers("The species *Canis lupus* (Linnaeus, 1758) was described in 1758 and surveyed in 2019.", ["unrelated"]), [])
+        self.assertEqual(self.numbers("The survey counted 1,758 wolves.", ["unrelated"]), ["1,758"])
+
     def test_abbreviated_scale_keeps_the_bare_number_reading(self) -> None:
         self.assertEqual(self.numbers("The fence is 2.5 m high.", ["A fence 2.5 metres high."]), [])
 

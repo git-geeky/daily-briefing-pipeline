@@ -266,6 +266,44 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertTrue(result["digest_tools"] and all(tools == [] for tools in result["digest_tools"]),
                         "with dossiers the digest writer needs no tools")
 
+    def test_a_low_confidence_article_is_dropped_before_repair_and_replaced_by_a_reserve(self) -> None:
+        result = run_harness("low_conf_replaced", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertNotIn("fixture-story-2", result["articles_done"])
+        self.assertIn("fixture-story-11", result["articles_done"], "the first reserve takes its place")
+        self.assertEqual(len([s for s in result["articles_done"] if s.startswith("fixture-story")]), 10)
+        self.assertNotIn("repair", result["calls"], "no repair is bought for an article that will not be published")
+        self.assertTrue(any("skipped, the writer's own confidence is low" in e for e in result["events"]), result["events"])
+        self.assertNotIn("HUMAN INTEREST", result["assembled_text"])
+
+    def test_human_interest_fills_the_gap_after_the_reserves_run_out(self) -> None:
+        result = run_harness("low_conf_human_fill", self.fresh())
+        self.assertEqual(result["exit"], 10, result["events"])
+        done = result["articles_done"]
+        science = [s for s in done if s.startswith("fixture-story")]
+        human = [s for s in done if s.startswith("human-story")]
+        self.assertEqual(len(science), 4, done)  # stories 1-4 were confident; 5-13 (Low, and Low to medium) were dropped
+        self.assertEqual(len(human), 3, "human interest fills the gap up to its maximum of three")
+        self.assertIn("HUMAN INTEREST", result["assembled_text"])
+        self.assertIn("Human interest story 1", result["assembled_text"])
+        self.assertTrue(any("(animals, humaninterest)" in e or "humaninterest" in e for e in result["events"]), result["events"])
+        self.assertTrue(result["pdf_exists"] and result["delivered"])
+
+    def test_a_human_interest_story_can_itself_be_skipped_and_the_next_is_tried(self) -> None:
+        result = run_harness("low_conf_human_fill_overflow", self.fresh())
+        self.assertEqual(result["exit"], 10, result["events"])
+        human = [s for s in result["articles_done"] if s.startswith("human-story")]
+        self.assertEqual(human, ["human-story-1"])
+        self.assertTrue(result["pdf_exists"] and result["delivered"])
+
+    def test_with_no_human_interest_available_the_briefing_simply_runs_shorter(self) -> None:
+        result = run_harness("low_conf_ship_fewer", self.fresh())
+        self.assertEqual(result["exit"], 10, result["events"])
+        science = [s for s in result["articles_done"] if s.startswith("fixture-story")]
+        self.assertEqual(len(science), 5)
+        self.assertNotIn("HUMAN INTEREST", result["assembled_text"])
+        self.assertTrue(result["pdf_exists"] and result["delivered"], result["events"])
+
     def test_a_misspelt_binomial_is_caught_by_the_gbif_lookup_and_repaired(self) -> None:
         result = run_harness("taxonomy_typo", self.fresh())
         self.assertEqual(result["exit"], 0, result["events"])

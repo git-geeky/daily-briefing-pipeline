@@ -83,6 +83,42 @@ def make_article(story: dict[str, Any], *, words: int = 3700, source_lines: list
     return text
 
 
+def make_human_interest_article(story: dict[str, Any], *, words: int = 1300, confidence: str = "Medium", binomial: str = "Genus species") -> str:
+    """A human-interest story (section ``humaninterest``): bottom line, confidence, story, animals, what it shows, sources."""
+    sid, title = story["story_id"], story["title"]
+    per_section = max(words // 3, 60)
+    parts = [
+        f"## {title}", f"<!-- story: {sid} -->", "",
+        "**Bottom line:** A ranger and a volunteer team kept a small population going through a hard winter; the account is specific and sourced, "
+        "and it shows what sustained local effort can do and what it cannot.",
+        f"**Confidence:** {confidence} — the programme's own account and an independent report agree on the main facts.",
+        "", "### The story", "", f"On 2026-10-20 the team began feeding *{binomial}* at three sites. " + filler_paragraphs(per_section, sid + "a"),
+        "", "### The animals", "", f"*{binomial}* is a small, ground-nesting species. " + filler_paragraphs(per_section, sid + "b"),
+        "", "### What it shows", "", filler_paragraphs(per_section, sid + "c"),
+        "", "### Primary Sources", "",
+        "- Programme account, field notes page. https://example.org/field-notes",
+        "- Regional newspaper report on the winter feeding effort. https://www.example-regional-news.org/fixture-human-interest",
+        "- Independent survey summary. https://news.mongabay.com/2026/10/fixture-human-interest/",
+    ]
+    return "\n".join(parts) + "\n"
+
+
+def make_human_interest_json(count: int = 4) -> list[dict[str, Any]]:
+    entries = []
+    topics = ["a ranger's winter feeding rounds", "a rehabilitator's decade with orphaned owls", "villagers who rebuilt a heron colony",
+              "a keeper and the last captive pair"]
+    for i in range(count):
+        entries.append({
+            "story_id": f"human-story-{i + 1}", "section": "humaninterest", "title": f"Human interest story {i + 1}: {topics[i % 4]}",
+            "rank": 20 + i, "group": "other", "region": "Global", "taxa": [{"common": "Example species", "scientific": "Genus species"}],
+            "angle": "A person and the animals they look after", "why_now": "Reported this week", "novelty": "new", "material": "moderate",
+            "sources": [{"url": f"https://example.org/hi-account-{i}", "role": "local", "lang": "en"},
+                        {"url": f"https://example.org/hi-report-{i}", "role": "press", "lang": "en"}],
+            "photo_queries": ["Genus species", "Example species"],
+        })
+    return entries
+
+
 _DEFAULT_SOURCE_POOL: list[str] = []
 
 

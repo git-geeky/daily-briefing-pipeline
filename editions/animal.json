@@ -13,15 +13,17 @@
   },
   "sections": [
     "animals",
+    "humaninterest",
     "digest"
   ],
   "section_titles": {
     "animals": "THE DAY IN ANIMAL SCIENCE",
+    "humaninterest": "HUMAN INTEREST",
     "digest": "ALSO NOTED"
   },
   "section_rules": {
     "animals": {
-      "min_count": 6,
+      "min_count": 3,
       "target_count": 10,
       "max_count": 12,
       "min_words": 3500,
@@ -34,6 +36,20 @@
       "image_floor": 1,
       "score_floor": 60,
       "expansion_score_floor": 75
+    },
+    "humaninterest": {
+      "min_count": 0,
+      "target_count": 0,
+      "max_count": 3,
+      "min_words": 1200,
+      "soft_min_words": 800,
+      "hard_floor": 500,
+      "min_sources": 3,
+      "min_source_classes": 1,
+      "min_section_sources": 0,
+      "score_floor": 50,
+      "expansion_score_floor": 65,
+      "omit_when_empty": true
     },
     "digest": {
       "min_count": 0,
@@ -61,6 +77,7 @@
   ],
   "toc_sections": [
     "animals",
+    "humaninterest",
     "digest"
   ],
   "closing_section": null,
@@ -89,7 +106,7 @@
   "rules": {
     "focus_beat_required": false,
     "hn_target": 0,
-    "min_assembled_bytes": 71680,
+    "min_assembled_bytes": 30720,
     "native_language_audit": false,
     "forbid_first_person": true,
     "min_native_language_articles": 3,
@@ -304,6 +321,19 @@
       "subject_template": "The Animal Science Briefing - {human_date}",
       "recipients_env": "ANIMAL_BRIEFING_RECIPIENTS",
       "extra_recipients_env": "ANIMAL_BRIEFING_EXTRA_RECIPIENTS"
+    },
+    "article_sections": [
+      "animals",
+      "humaninterest"
+    ],
+    "fill_sections": {
+      "humaninterest": "animals"
+    },
+    "fill_reserves": 4,
+    "skip_low_confidence": true,
+    "section_briefs": {
+      "animals": "Animal science for an expert reader: findings, status decisions, disease events and methods, each built on a primary document.",
+      "humaninterest": "Human interest, used only to fill a gap left by animal-science stories that could not be written with confidence: people and animals - field researchers and their long-term study animals, wildlife rehabilitators, keepers, rangers, communities and citizen scientists living with or protecting wildlife. A real person or place, a real sequence of events, named sources; warm but not sentimental. Never animal cruelty or harm as the subject, never pets-and-celebrities, never viral clips."
     }
   }
 }

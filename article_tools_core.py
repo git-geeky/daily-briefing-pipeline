@@ -127,6 +127,31 @@ def _strip_body_links(text: str) -> tuple[str, int]:
 # --------------------------------------------------------------------------------------------
 # Summaries, header, cross-references
 # --------------------------------------------------------------------------------------------
+_CONFIDENCE_LINE_RE = re.compile(r"(?im)^[ \t>]*\*\*confidence:?\*\*:?[ \t]*(.+)$")
+
+
+def confidence_line(markdown: str) -> str:
+    match = _CONFIDENCE_LINE_RE.search(markdown or "")
+    return match.group(1).strip() if match else ""
+
+
+def confidence_rating(markdown: str) -> str | None:
+    """``"low" | "medium" | "high" | None`` from the article's Confidence line. A rating that includes low anywhere in its stated
+    range counts as low ("Low to medium", "Medium to low", "Low-medium"); a qualifier in brackets ("Medium (low for the dating)")
+    does not."""
+    text = confidence_line(markdown)
+    if not text:
+        return None
+    head = re.split(r"[.,;:\u2014\u2013(]|\s-\s|\b(?:because|as|since|given|owing|due)\b", text, maxsplit=1)[0].lower()
+    if re.search(r"\blow\b", head):
+        return "low"
+    if re.search(r"\bmedium\b|\bmoderate\b", head):
+        return "medium"
+    if re.search(r"\bhigh\b", head):
+        return "high"
+    return None
+
+
 def article_summary(markdown: str, story: dict[str, Any] | None = None) -> dict[str, Any]:
     title = re.search(r"(?m)^##\s+(.+)$", markdown)
     bottom = re.search(r"(?im)^[ \t>]*\*\*bottom line:?\*\*:?[ \t]*(.+)$", markdown)

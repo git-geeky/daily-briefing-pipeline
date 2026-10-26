@@ -68,6 +68,27 @@ class PriorMemoryTests(unittest.TestCase):
         self.assertEqual(titles, ["Otters in the estuary", "Voles in the meadow"])
 
 
+class ConfidenceRatingTests(unittest.TestCase):
+    """The Confidence line decides whether an article is written at all: Low (including a range that reaches Low) is not."""
+
+    def rating(self, text: str):
+        return tools.confidence_rating(f"## T\n**Confidence:** {text}\n")
+
+    def test_low_in_any_part_of_the_stated_range_is_low(self) -> None:
+        for text in ("Low", "Low to medium because the paper's statistics were unavailable.", "Confidence is low, as the notice has no case counts.",
+                     "Medium to low: single survey", "Low-medium; preprint", "Low, because the report was not read"):
+            self.assertEqual(self.rating(text), "low", text)
+
+    def test_a_qualifier_after_the_rating_does_not_change_it(self) -> None:
+        for text, expected in (("Medium (low for the dating)", "medium"), ("Medium, though the low-tide counts were estimated", "medium"),
+                               ("Medium - peer-reviewed, low sample size", "medium"), ("High: replicated twice", "high"), ("Moderate", "medium")):
+            self.assertEqual(self.rating(text), expected, text)
+
+    def test_no_confidence_line_is_not_a_rating(self) -> None:
+        self.assertIsNone(tools.confidence_rating("## T\n\nNo such line here.\n"))
+        self.assertEqual(tools.confidence_line("## T\n**Confidence:** High: yes\n"), "High: yes")
+
+
 class NormalizeTests(unittest.TestCase):
     def test_messy_output_is_repaired_without_touching_content(self) -> None:
         raw = fx.make_article(STORY, words=600, messy=True)

@@ -6,7 +6,7 @@ Edition id: `animal` (`BRIEFING_EDITION=animal`). Config: `editions/animal.json`
 
 An expert. Assume fluency in zoology, ecology, evolutionary biology, conservation status systems (IUCN Red List categories and criteria, CITES appendices, ESA/EPBC/national listings), veterinary and One Health vocabulary, and basic statistics. Never define IUCN, apex predator, phylogeny, or p-value. Do not explain what a reader at this level already knows; spend the words on mechanism, design, effect size, uncertainty, prior literature, and what would change the conclusion.
 
-Voice: precise, sober, specific, **impersonal**. Never write in the first person ("I could not open...", "my subtraction", "we"). State access limits and derived figures plainly instead: "The registry page returned HTTP 403, so status is taken from the press release"; "the ratio is computed here from the two totals". Calibrated hedging ("suggests", "is consistent with", "demonstrates") that matches the study design. No anthropomorphism, no "amazing", no listicle rhythm, no padded transitions. Numbers carry units, sample sizes, intervals and years.
+Voice: precise, sober, specific, **impersonal**. Never write in the first person ("I could not open...", "my subtraction", "we"). Say plainly when a figure is derived ("the ratio is computed here from the two totals"). **Sources you could not open do not factor in:** they are not cited, not listed in Primary Sources, not discussed and not mentioned (no "the paper was not read", no "HTTP 403"); the article stands on what was read. Calibrated hedging ("suggests", "is consistent with", "demonstrates") that matches the study design. No anthropomorphism, no "amazing", no listicle rhythm, no padded transitions. Numbers carry units, sample sizes, intervals and years.
 
 ## What gets covered (selection)
 
@@ -22,7 +22,9 @@ Balance (applied by the slate stage, checked by the reviewer): at most three art
 
 ## Quota and length
 
-Adaptive: **target 10** full articles, **minimum 6**, **maximum 12**. Aim for **3,500 words** per article *when the unique source material supports it*; a story with less genuine material is written shorter, honestly, never padded. Bands (validator): below 1,500 words blocks; 1,500–2,499 is non-blocking; 2,500–3,499 is a warning. Filler is a defect: restated sentences, generic background the reader already has, and vague attribution all count against an article. A story that cannot reach the hard floor with real material is replaced from the candidate pool or dropped with a recorded reason; never fabricate depth.
+Adaptive: **target 10** full articles, **minimum 3**, **maximum 12**. Quality outranks the count: an article whose honest **Confidence is Low** (including "Low to Medium") is not written at all, and the story is replaced by the next reserve. Aim for **3,500 words** per article *when the unique source material supports it*; a story with less genuine material is written shorter, honestly, never padded. Bands (validator): below 1,500 words blocks; 1,500–2,499 is non-blocking; 2,500–3,499 is a warning. Filler is a defect: restated sentences, generic background the reader already has, and vague attribution all count against an article. A story that cannot reach the hard floor with real material is replaced from the candidate pool or dropped with a recorded reason; never fabricate depth.
+
+A **Human Interest** section (maximum 3, never part of the target) exists only to fill the gap left by animal-science stories that could not be written with confidence: it is used after the animal-science reserves are exhausted, and left out when no good human-interest story exists; the briefing is then simply shorter.
 
 A short **Also Noted** section (target 6, maximum 10) carries real but smaller items in 110–300 words each, each with a bottom line and two or more sources.
 
@@ -45,6 +47,9 @@ A short **Also Noted** section (target 6, maximum 10) carries real but smaller i
 # THE DAY IN ANIMAL SCIENCE
 ## <Article title>
 ...
+# HUMAN INTEREST                       (only when it is needed to fill a gap)
+## <Story title>
+...
 # ALSO NOTED
 ## <Item title>
 ...
@@ -59,7 +64,7 @@ A short **Also Noted** section (target 6, maximum 10) carries real but smaller i
 ![<caption with creator, licence, source URL>](<local image path>)     <- inserted by the photo stage; do not write image lines
 
 **Bottom line:** two to three sentences stating what is established, what is not, and why it matters.
-**Confidence:** High | Medium | Low — one clause on why (design, replication, source quality, access limits).
+**Confidence:** High | Medium — one clause on why (design, replication, source quality). The pipeline does not publish an article rated Low.
 
 ### Taxonomy & Status
 | Taxon | Scientific name | IUCN Red List | CITES | Range / population |
@@ -107,15 +112,33 @@ Rules that the validators enforce (see `editions/animal.json`):
 - Italicise every binomial on first use in each section (`*Panthera tigris*`); use authority and year in the Taxonomy table when the taxonomy is contested.
 - Status data (IUCN category and assessment year, CITES appendix, national listing) must come from the registry page cited, with the retrieval year; if a registry could not be reached, say so instead of recalling from memory.
 
+### Human Interest template (section `humaninterest`)
+
+People and animals: field researchers and their long-term study animals, rehabilitators, keepers, rangers, communities and citizen scientists living with or protecting wildlife. A real person or place, a real sequence of events and named sources; warm but not sentimental; never cruelty or harm as the subject, never pets and celebrities, never viral clips. 1,200 words when the material supports it (hard floor 500), at least 3 sources, at least one that is the person's or organisation's own account and one independent of it.
+
+```
+## <Title: who, where, and what happened>
+<!-- story: <stable-slug> -->
+**Bottom line:** two to three sentences.
+**Confidence:** High | Medium — one clause on why. (A Low rating means the article is not written.)
+
+### The story            dated, sourced, with named people and places
+### The animals          the species and what is known about them (italic binomial on first use)
+### What it shows        what the account establishes and what it does not
+### Primary Sources
+```
+
+The same honesty rules apply (verbatim quotations only, no invented detail, no first person). Photographs are inserted by the photo stage when licensed ones exist; none is required.
+
 ### Story markers
 `<!-- story: slug -->` gives the story a stable identity; add `; prior: slug` when the story is a development of a prior briefing item. Markers are kept in fragments for continuity and stripped from the reader-facing document.
 
 ## Honesty rules (all sections)
 
-1. **Provenance.** Every number, date, quotation, and attribution must trace to a source you actually opened in this run. If you could not open it, say it was not verified or leave it out. The pipeline cross-checks numbers, quotations, DOIs and URLs against what was fetched; unmatched items are sent back for repair and, if unresolved, flagged to the reader.
+1. **Provenance.** Every number, date, quotation, and attribution must trace to a source you actually opened in this run. If you could not open it, leave it out. The pipeline cross-checks numbers, quotations, DOIs and URLs against what was fetched; unmatched items are sent back for repair and, if unresolved, flagged to the reader.
 2. **Separate** finding, interpretation, and speculation. Mark preprints and press-office claims as such. Where a press release goes beyond its paper, say so.
 3. **Name uncertainty** (intervals, detection probability, taxonomy disputes, population-estimate methods). Do not round conflicting estimates into false agreement.
-4. **No invention to reach length.** Prefer a shorter, denser article with a stated material limit (`Confidence` line) over padding.
+4. **No invention to reach length.** Prefer a shorter, denser article over padding. If the sources you read leave the conclusion at Low confidence, do not write the article (`SKIP: low_confidence`).
 5. **Source skepticism.** NGO and zoo material is advocacy- or institution-lensed; trade press is access-lensed; state-aligned outlets carry state framing. Say which lens applies when it matters. Prefer the primary document.
 6. **Native-language work.** Search the national-language outlet for locally reported stories; do not rely on English re-reports of foreign events.
 7. **Time.** Use absolute dates. Anchor to the briefing date given in the prompt; do not infer "today" from memory.

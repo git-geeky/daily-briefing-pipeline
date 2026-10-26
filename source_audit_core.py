@@ -5,6 +5,7 @@ import concurrent.futures
 import dataclasses
 import html as html_lib
 import json
+import os
 import re
 import socket
 import ssl
@@ -25,6 +26,7 @@ _SHARED_DIR = str(Path(__file__).resolve().parent)
 if _SHARED_DIR not in sys.path:
     sys.path.insert(0, _SHARED_DIR)
 import edition_core  # noqa: E402
+import source_health_core  # noqa: E402
 
 
 SCHEMA_VERSION = 1
@@ -101,6 +103,16 @@ def source_audit_path(date: str) -> Path:
     path = Path(helper(date))
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def source_health_path() -> Path:
+    """Durable per-source memory (outside the three-day ``generated/`` clean-up, shared by the editions)."""
+    helper = getattr(briefing_paths_module, "research_vault_dir", None)
+    if not callable(helper):
+        raise AttributeError("briefing_paths.research_vault_dir is required")
+    path = Path(helper())
+    path.mkdir(parents=True, exist_ok=True)
+    return path / "source-health.json"
 
 
 def source_audit_markdown_path(date: str) -> Path:
@@ -762,6 +774,20 @@ def generate_source_audit(
         catalog = parse_source_catalogs()  # the active edition's catalogs
     fixture_payload = load_fixture(fixture)
 
+    # Source health: sources judged permanently unreachable are not fetched (or counted against the audit) any more; a retired source
+    # is probed again every REPROBE_DAYS days and reinstated the first time it answers. Fixture runs never touch the memory.
+    health_state: dict[str, Any] | None = None
+    probe_ids: set[str] = set()
+    full_catalog = catalog
+    if not fixture_payload and os.environ.get("BRIEFING_SOURCE_HEALTH", "1") != "0":
+        try:
+            health_state = source_health_core.load_state(source_health_path())
+            catalog, _skipped = source_health_core.filter_catalog(full_catalog, health_state, date, floor=MINIMUM_SOURCE_FLOOR + 10)
+            probe_ids = source_health_core.due_for_probe(health_state, date) & {entry.source_id for entry in catalog}
+        except Exception as exc:  # noqa: BLE001 - the memory is an optimisation; an unreadable file never stops the audit
+            print(f"source health unavailable: {exc!r}")
+            health_state, catalog, probe_ids = None, full_catalog, set()
+
     if fixture_payload:
         sources = [fixture_result_for(entry, fixture_payload, generated_at=generated_at) for entry in catalog]
     else:
@@ -773,6 +799,17 @@ def generate_source_audit(
             sources = [future.result() for future in concurrent.futures.as_completed(futures)]
         source_order = {entry.source_id: index for index, entry in enumerate(catalog)}
         sources.sort(key=lambda item: source_order.get(str(item.get("source_id")), 999999))
+
+    health_report: dict[str, Any] | None = None
+    if health_state is not None:
+        try:
+            health_report = source_health_core.record_results(health_state, sources, date, full_catalog)
+            source_health_core.save_state(source_health_path(), health_state)
+        except Exception as exc:  # noqa: BLE001
+            print(f"source health not recorded: {exc!r}")
+    if probe_ids:  # re-probes inform the memory only: they are not part of today's audit
+        sources = [source for source in sources if str(source.get("source_id")) not in probe_ids]
+        catalog = [entry for entry in catalog if entry.source_id not in probe_ids]
 
     summary = build_summary(sources, catalog_count=len(catalog))
     status = derive_status(summary, fixture=bool(fixture_payload))
@@ -788,6 +825,13 @@ def generate_source_audit(
         "summary": summary,
         "sources": sources,
     }
+    if health_report is not None and health_state is not None:
+        payload["source_health"] = source_health_core.summary_for_report(health_report)
+        try:
+            health_md = source_audit_path(date).with_name(source_audit_path(date).name.replace("source-audit", "source-health").replace(".json", ".md"))
+            health_md.write_text(source_health_core.render_markdown(health_state, health_report), encoding="utf-8")
+        except OSError:
+            pass
 
     json_path = source_audit_path(date)
     markdown_path = source_audit_markdown_path(date)

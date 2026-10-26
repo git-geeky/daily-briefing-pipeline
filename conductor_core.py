@@ -63,6 +63,11 @@ def resolve_timezone(name: str):
 DEFAULT_SETTINGS: dict[str, Any] = {
     "slate_candidates": 14, "slate_reserves": 4, "digest_items": 6, "max_parallel_articles": 2,
     "article_sections": None, "article_section": None, "digest_section": None, "article_min_total": None,
+    # An article whose own Confidence line is Low is not written at all, and a story is replaced rather than shipped weak.
+    "skip_low_confidence": False,
+    # {"humaninterest": "animals"}: stories of the first section are written only to fill what the second could not (low-confidence
+    # or unusable stories), up to the section's maximum, and never as part of the target count.
+    "fill_sections": {}, "fill_reserves": 4,
     "section_briefs": {},
     "timezone": "Asia/Tokyo", "deadline_local": "11:30",
     "models": {
@@ -581,8 +586,20 @@ class Conductor:
             pass
         return code, output
 
-    def prompt(self, name: str, values: dict[str, Any]) -> str:
-        return render_prompt((self.prompts_dir / f"{name}.md").read_text(encoding="utf-8"), values)
+    def prompt(self, name: str, values: dict[str, Any], section: str | None = None) -> str:
+        """``prompts/<edition>/<name>-<section>.md`` when it exists (a section with its own brief), else ``<name>.md``."""
+        path = self.prompts_dir / f"{name}-{section}.md" if section else None
+        if path is None or not path.exists():
+            path = self.prompts_dir / f"{name}.md"
+        return render_prompt(path.read_text(encoding="utf-8"), values)
+
+    def fill_sections(self) -> dict[str, str]:
+        """{filler section: primary section it fills for}, only for sections that are part of this edition's plan."""
+        plan = self.plan()
+        return {str(k): str(v) for k, v in (self.settings.get("fill_sections") or {}).items() if k in plan and v in plan}
+
+    def is_fill(self, story: dict[str, Any]) -> bool:
+        return self.section_of(story) in self.fill_sections()
 
     # ================================================================================
     # Entry points
@@ -845,7 +862,11 @@ class Conductor:
         return "\n\n---\n\n".join(parts)
 
     def quota_text(self) -> str:
+        fill = self.fill_sections()
         return "\n".join(
+            (f"- {section} ({self.edition.section_titles.get(section, section)}): reserves only, never part of the first {self.total_target()}; "
+             f"used only to replace {fill[section]} stories that fail verification (up to {q['max']}); return about {self.settings['fill_reserves']}")
+            if section in fill else
             f"- {section} ({self.edition.section_titles.get(section, section)}): target {q['target']}, minimum {q['min']}, maximum {q['max']}"
             for section, q in self.plan().items())
 
@@ -867,7 +888,8 @@ class Conductor:
             "QUOTAS": self.quota_text(), "SECTION_BRIEFS": "\n".join(f"- {k}: {v}" for k, v in self.settings["section_briefs"].items()),
         }
         banned = lambda text: briefing_manifest.find_banned_topics(text, "")  # noqa: E731
-        multi = len(plan) > 1
+        fill = self.fill_sections()
+        multi = len(plan) - len(fill) > 1
         report, raw = None, None
         for attempt in (1, 2):
             result = self.call("slate", self.prompt("slate", values), role="slate", tools=["WebSearch"], label="slate")
@@ -876,24 +898,29 @@ class Conductor:
             try:
                 raw = slate_core.extract_json(result.text)
                 report = slate_core.validate_slate(
-                    raw, prior_titles=prior, banned_check=banned, sections=tuple(plan) if multi else (),
+                    raw, prior_titles=prior, banned_check=banned, sections=tuple(plan) if (multi or fill) else (),
                     default_section=None if multi else self.article_section)
             except ValueError as exc:
                 self.log(f"slate attempt {attempt}: unusable output ({exc})")
                 continue
-            if len(report.kept) >= self.total_min():
+            if len([e for e in report.kept if e.get("section") not in fill]) >= self.total_min():
                 break
             self.log(f"slate attempt {attempt}: only {len(report.kept)} valid stories")
             values["SPEC"] += f"\n\nNOTE: your previous answer had only {len(report.kept)} usable stories; return at least {self.total_min() + 4}."
-        if report is None or len(report.kept) < self.total_min():
+        if report is None or len([e for e in report.kept if e.get("section") not in fill]) < self.total_min():
             raise StageFailed("slate", f"could not obtain {self.total_min()} valid stories")
         self._top_up_reserves(report, values, prior, banned, plan, multi)
+        primary_entries = [e for e in report.kept if e.get("section") not in fill]
         if multi:
-            selected, backups, notes = slate_core.select_by_sections(report.kept, plan)
+            selected, backups, notes = slate_core.select_by_sections(primary_entries, {k: v for k, v in plan.items() if k not in fill})
         else:
             quota = plan[self.article_section]
             selected, backups, notes = slate_core.select_slate(
-                report.kept, target=quota["target"], minimum=quota["min"], maximum=quota["max"])
+                primary_entries, target=quota["target"], minimum=quota["min"], maximum=quota["max"])
+        fillers = sorted((e for e in report.kept if e.get("section") in fill), key=lambda e: (e["material"] == "thin", e["rank"]))
+        backups = backups + fillers[: int(self.settings["fill_reserves"])]
+        if fillers:
+            notes.append(f"{min(len(fillers), int(self.settings['fill_reserves']))} human-interest reserve(s)")
         atomic_write(Path(self.ctx.slate_path(self.date)), json.dumps(
             {"selected": selected, "backups": backups, "dropped": report.dropped, "notes": notes}, indent=1, ensure_ascii=False) + "\n")
         decisions = raw.get("no_update_decisions") if isinstance(raw, dict) else None
@@ -908,12 +935,14 @@ class Conductor:
         failures meant no briefing; ask once for the missing reserves (never fatal)."""
         import slate_core
 
+        fill = self.fill_sections()
         wanted = self.total_target() + int(self.settings.get("slate_reserves", 4))
-        if len(report.kept) >= wanted or self.past_deadline():
+        have = len([e for e in report.kept if e.get("section") not in fill])
+        if have >= wanted or self.past_deadline():
             return
-        self.log(f"slate: {len(report.kept)} usable stories and {wanted} wanted; asking once for reserves")
+        self.log(f"slate: {have} usable stories and {wanted} wanted; asking once for reserves")
         note = (f"\n\nNOTE: these stories are already chosen. Return ONLY additional stories as a JSON array in the same format, at least "
-                f"{wanted - len(report.kept)} of them, to serve as reserves for stories that fail verification. Thin material is acceptable for "
+                f"{wanted - have} of them, to serve as reserves for stories that fail verification. Thin material is acceptable for "
                 "reserves. Do not repeat or rephrase any of these:\n" + "\n".join(f"- {s['title']}" for s in report.kept))
         try:
             result = self.call("slate", self.prompt("slate", {**values, "SPEC": values["SPEC"] + note}), role="slate",
@@ -922,7 +951,7 @@ class Conductor:
                 return
             extra = slate_core.validate_slate(
                 slate_core.extract_json(result.text), prior_titles=prior + [s["title"] for s in report.kept], banned_check=banned,
-                sections=tuple(plan) if multi else (), default_section=None if multi else self.article_section)
+                sections=tuple(plan) if (multi or fill) else (), default_section=None if multi else self.article_section)
         except (ValueError, Deferred, HumanActionNeeded) as exc:
             self.log(f"slate reserves unavailable: {exc}")
             return
@@ -963,6 +992,7 @@ class Conductor:
 
         slate = self.load_slate()
         stories = slate["selected"] + slate["backups"][:4]
+        stories += [b for b in slate["backups"][4:] if self.is_fill(b)][: int(self.settings["fill_reserves"])]  # human-interest fill-ins
         image_dir = Path(self.paths.image_cache_dir(self.date))
         fetcher = self.photo_fetcher or photo_core.RequestsFetcher()
         report = photo_core.run_photo_stage(stories, image_dir=image_dir, report_path=image_dir / "image-report.json",
@@ -1021,14 +1051,31 @@ class Conductor:
             self._write_many(todo)
             attempted.update(s["story_id"] for s in todo)
             queue = []
+            fill = self.fill_sections()
             for section, quota in plan.items():
+                if section in fill:
+                    continue  # a fill section is never a target of its own
                 missing = quota["target"] - len(self._finished_articles(section))
                 if missing <= 0:
                     continue
-                replacements = [b for b in slate["backups"] if self.section_of(b) == section and b["story_id"] not in attempted][:missing]
-                if replacements:
-                    self.log(f"articles: {section} is {missing} short of target; trying {len(replacements)} backup stories")
-                    queue += replacements
+                reserves = [b for b in slate["backups"] if self.section_of(b) == section and b["story_id"] not in attempted]
+                # Stories the slate itself called thin come last: a human-interest piece with real sources beats a thin story that is
+                # likely to end up low-confidence, and the confidence gate catches whatever thin story still gets written.
+                solid = [b for b in reserves if b.get("material") != "thin"]
+                thin = [b for b in reserves if b.get("material") == "thin"]
+                chosen = solid[:missing]
+                for filler_section, primary in fill.items():
+                    if primary != section or len(chosen) >= missing:
+                        continue
+                    room = int(plan[filler_section]["max"]) - len(self._finished_articles(filler_section)) - len(
+                        [q for q in queue if self.section_of(q) == filler_section])
+                    fillers = [b for b in slate["backups"] if self.section_of(b) == filler_section and b["story_id"] not in attempted]
+                    chosen += fillers[: max(0, min(missing - len(chosen), room))]
+                chosen += thin[: max(0, missing - len(chosen))]
+                if chosen:
+                    kinds = ", ".join(sorted({self.section_of(b) for b in chosen}))
+                    self.log(f"articles: {section} is {missing} short of target; trying {len(chosen)} backup stories ({kinds})")
+                    queue += chosen
         have = len(self._finished_articles())
         short = {sec: len(self._finished_articles(sec)) for sec, q in plan.items() if len(self._finished_articles(sec)) < q["min"]}
         self.state.mark("articles", "done", finished=have, target=self.total_target(), short_sections=short)
@@ -1194,7 +1241,7 @@ class Conductor:
             if dossier:
                 values["DOSSIER"] = dossier.render()
                 corpus += dossier.corpus()
-            result = self.call("article", self.prompt("article", values), role="article", tools=["WebFetch", "WebSearch"],
+            result = self.call("article", self.prompt("article", values, section), role="article", tools=["WebFetch", "WebSearch"],
                                label=sid, budget_usd=budget)
             outcome.attempts, outcome.cost_usd = 1, result.cost_usd
             if not result.ok:
@@ -1216,6 +1263,8 @@ class Conductor:
                 return outcome
             outcome.fixes += fixes
             self._save_draft(sid, article, corpus, outcome)
+        if self._skip_low_confidence(article, sid, outcome):
+            return outcome  # before any repair is paid for
         article = photo_core.insert_photos(article, self.photo_lines(sid))
         repair_dossier = dossier.render(total_chars=int(self.settings["dossier"]["repair_chars"])) if dossier else NO_DOSSIER
 
@@ -1243,7 +1292,8 @@ class Conductor:
             if word_only:
                 findings.append("The article is below the hard word floor. Add only real, sourced material (open more sources); "
                                 "if there is not enough genuine material, return SKIP: material_limited.")
-            fix = self.call("repair", self.prompt("repair", {**values, "DOSSIER": repair_dossier, "FINDINGS": "\n".join(findings), "ARTICLE": article}),
+            fix = self.call("repair", self.prompt("repair", {**values, "DOSSIER": repair_dossier, "FINDINGS": "\n".join(findings), "ARTICLE": article},
+                                                  section),
                             role="repair", tools=["WebFetch", "WebSearch"], label=sid, budget_usd=budget,
                             timeout_key="repair_s")
             outcome.attempts += 1
@@ -1264,6 +1314,8 @@ class Conductor:
             outcome.fixes += more
             article = photo_core.insert_photos(article, self.photo_lines(sid))
             self._save_draft(sid, article, corpus, outcome)
+            if self._skip_low_confidence(article, sid, outcome):
+                return outcome  # a repair that leaves the writer unsure of its own conclusion does not make it publishable
 
         outcome.words = int(item.get("word_count", 0))
         outcome.provenance = prov.to_dict()
@@ -1299,6 +1351,22 @@ class Conductor:
                  f"{', ' + '; '.join(outcome.flags) if outcome.flags else ''})")
         return outcome
 
+    def _skip_low_confidence(self, article: str, sid: str, outcome: ArticleOutcome) -> bool:
+        """An article whose own Confidence line says Low (including "Low to medium") is not worth the reader's time: it is dropped and
+        the story replaced, never shipped with an apology."""
+        if not self.settings.get("skip_low_confidence"):
+            return False
+        import article_tools_core as tools
+
+        if tools.confidence_rating(article) != "low":
+            return False
+        outcome.status, outcome.terminal = "skipped", False
+        outcome.reason = f"low_confidence: {tools.confidence_line(article)[:200]}"
+        self.log(f"article {sid}: skipped, the writer's own confidence is low ({tools.confidence_line(article)[:120]})")
+        atomic_write(self.articles_dir / f"{sid}.last.md", article)  # kept for diagnosis; never shipped
+        self._save_article_meta(sid, outcome)
+        return True
+
     def _save_article_meta(self, sid: str, outcome: ArticleOutcome) -> None:
         if outcome.status == "failed" and not outcome.terminal:
             # Every 30-minute repetition would otherwise buy the same broken story again (3 attempts x the per-article budget).
@@ -1321,7 +1389,7 @@ class Conductor:
         slate = self.load_slate()
         used = {a["story"]["story_id"] for a in self._finished_articles()}
         attempted = {sid for sid in (p.stem for p in self.articles_dir.glob("*.json"))}
-        pool = [s for s in slate["backups"] if s["story_id"] not in used and s["story_id"] not in attempted]
+        pool = [s for s in slate["backups"] if s["story_id"] not in used and s["story_id"] not in attempted and not self.is_fill(s)]
         pool = pool[: int(self.settings["digest_items"]) + 2]
         dossiers: dict[str, Any] = {}
         if self.web_fetcher is not None:
@@ -1540,7 +1608,10 @@ class Conductor:
             if len(mine) < quota["min"] and quota["min"] > 0:
                 bodies.append(f"## Quality Failure: only {len(mine)} of the {quota['min']} minimum stories met the evidence bar for "
                               f"{titles[section]} today\n\nA visible gap is reported instead of padding a weak article.\n")
-            fragment = tools.compose_section(titles[section], bodies) if bodies else f"# {titles[section]}\n"
+            if bodies:
+                fragment = tools.compose_section(titles[section], bodies)
+            else:  # a fill-in section with nothing to fill shows no empty heading
+                fragment = "" if section in self.fill_sections() else f"# {titles[section]}\n"
             atomic_write(Path(self.paths.fragment_path(section, self.date)), fragment)
         if self.digest_section:
             digest = load_json(self.articles_dir / "digest.json", {}).get("items", [])

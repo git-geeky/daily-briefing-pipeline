@@ -1,10 +1,12 @@
 # Runtime dependencies for the shared briefing cores.
-requests>=2.31
-beautifulsoup4>=4.12
-lxml>=5.0
-Pillow>=10.0
-reportlab>=4.0
-pypdf>=4.0
+# Upper bounds stop an unattended `pip install -r` from jumping a major version that the test suite has never seen;
+# requirements-tested.txt records the exact versions the suite last passed on.
+requests>=2.31,<3
+beautifulsoup4>=4.12,<5
+lxml>=5.0,<7
+Pillow>=10.0,<13
+reportlab>=4.0,<6
+pypdf>=4.0,<7
 # Windows has no system time-zone database; zoneinfo (Asia/Tokyo deadlines, dates) needs this wheel there.
 tzdata>=2024.1; sys_platform == "win32"
 # Optional (adaptive_fetch TLS impersonation; never auto-installed in unattended runs):

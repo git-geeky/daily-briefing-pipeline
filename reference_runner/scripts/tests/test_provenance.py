@@ -142,15 +142,40 @@ class EuropeanNumberTests(unittest.TestCase):
 class TranslatedQuoteTests(unittest.TestCase):
     """Native-language sources are quoted in the writer's translation, which cannot match the fetched original verbatim."""
 
-    def test_a_quotation_marked_as_a_translation_is_exempt_from_the_verbatim_check_but_reported(self) -> None:
+    def test_a_translation_is_exempt_only_when_the_original_is_quoted_beside_it_and_found(self) -> None:
         article = ('## T\nThe agency said "the population of the island has fallen by roughly half since the survey of 2019" '
-                   '(translation from the Japanese original).\n\nA second paragraph follows here.\n')
+                   '(my translation of "島の個体数は2019年の調査以降およそ半減した").\n\nA second paragraph follows here.\n')
         report = prov.check_article(article, ["the original text is in Japanese: 島の個体数は2019年の調査以降およそ半減した"], check_network=False)
         self.assertEqual(report.unmatched_quotes, [])
-        self.assertEqual(report.quotes_checked, 0)
         self.assertEqual(len(report.translated_quotes), 1)
         self.assertEqual(report.to_dict()["translated_quotes"], 1)
         self.assertFalse(report.needs_repair())
+
+    def test_a_translation_label_without_a_verifying_original_excuses_nothing(self) -> None:
+        article = ('## T\nThe agency said "the population of the island has fallen by roughly half since the survey of 2019" '
+                   '(translation from the Japanese original).\n\nA second paragraph follows here.\n')
+        report = prov.check_article(article, ["the original text is in Japanese: 島の個体数は2019年の調査以降およそ半減した"], check_network=False)
+        self.assertEqual(len(report.unmatched_quotes), 1)
+        self.assertEqual(report.translated_quotes, [])
+        self.assertTrue(report.needs_repair())
+
+    def test_an_original_that_is_not_in_the_evidence_does_not_verify_the_translation(self) -> None:
+        article = ('## T\nThe agency said "the population of the island has fallen by roughly half since the survey of 2019" '
+                   '(my translation of "島の個体数は2019年の調査以降およそ四分の一になった").\n')
+        report = prov.check_article(article, ["島の個体数は2019年の調査以降およそ半減した"], check_network=False)
+        self.assertTrue(report.unmatched_quotes)
+
+    def test_translation_labels_cover_at_most_a_few_quotations_per_article(self) -> None:
+        paragraphs = []
+        corpus = []
+        for n in range(5):
+            original = f"original sentence number {n} in the foreign language of the source text"
+            corpus.append(original)
+            paragraphs.append(f'The agency said "invented translated sentence number {n} that nobody ever published anywhere" '
+                              f'(translation of "{original}").')
+        report = prov.check_article("## T\n" + "\n\n".join(paragraphs) + "\n", corpus, check_network=False)
+        self.assertEqual(len(report.translated_quotes), prov.MAX_TRANSLATED_QUOTES)
+        self.assertEqual(len(report.unmatched_quotes), 5 - prov.MAX_TRANSLATED_QUOTES)
 
     def test_the_cue_must_sit_next_to_the_quotation_not_anywhere_in_the_article(self) -> None:
         article = ('## T\nA translation of the report appeared later in the week, covering other matters entirely and at length '
@@ -213,3 +238,106 @@ class RepairPolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StrictNumberTests(unittest.TestCase):
+    """A figure must be supported as the same kind of figure: a scale or a percentage is not satisfied by a bare coincidence."""
+
+    def numbers(self, article: str, corpus: list[str]) -> list[str]:
+        report = prov.check_article("## T\n" + article + "\n", corpus, check_network=False)
+        return [n["text"] for n in report.unmatched_numbers]
+
+    def test_a_scaled_figure_is_not_supported_by_another_scale_or_by_a_page_number(self) -> None:
+        corpus = ["The grant was 2.5 million euros (see page 37 of the report)."]
+        self.assertEqual(self.numbers("The fund holds 2.5 billion dollars across 37% of sites.", corpus), ["2.5 billion dollars"[:11], "37%"])
+
+    def test_scaled_figure_matches_its_expanded_and_other_language_forms(self) -> None:
+        self.assertEqual(self.numbers("The grant was 2.5 million.", ["De subsidie bedroeg 2.500.000 euro."]), [])
+        self.assertEqual(self.numbers("The grant was 2.5 million.", ["De subsidie bedroeg 2,5 miljoen euro."]), [])
+        self.assertEqual(self.numbers("Losses reached 3.4%.", ["Het verlies bedroeg 3,4 procent."]), [])
+        self.assertEqual(self.numbers("Losses reached 3.4 percent.", ["Der Verlust betrug 3,4%."]), [])
+
+    def test_a_percentage_is_supported_by_a_percentage_not_by_the_bare_number(self) -> None:
+        self.assertEqual(self.numbers("Cover fell by 37%.", ["Cover fell by 37 percent last year."]), [])
+        self.assertEqual(self.numbers("Cover fell by 37%.", ["See Table 3 on page 37."]), ["37%"])
+
+    def test_a_short_article_of_invented_figures_needs_repair(self) -> None:
+        article = "The herd numbers 4,812 animals, 61% of them female, spread over 733 square kilometres in 2024."
+        report = prov.check_article("## T\n" + article + "\n", ["Nothing numeric here at all."], check_network=False)
+        self.assertGreaterEqual(len(report.unmatched_numbers), 3)
+        self.assertTrue(report.needs_repair())
+
+    def test_abbreviated_scale_keeps_the_bare_number_reading(self) -> None:
+        self.assertEqual(self.numbers("The fence is 2.5 m high.", ["A fence 2.5 metres high."]), [])
+
+
+class QuoteStyleTests(unittest.TestCase):
+    CORPUS = ["the director insisted we will never close the reserve while a single animal remains at risk of poaching"]
+
+    def test_single_quoted_invented_sentence_is_reported(self) -> None:
+        article = "## T\nThe director said 'we will always keep the reserve open whatever the weather brings this year' on Monday.\n"
+        report = prov.check_article(article, self.CORPUS, check_network=False)
+        self.assertEqual(len(report.unmatched_quotes), 1)
+
+    def test_apostrophes_do_not_open_a_quotation(self) -> None:
+        article = "## T\nThe dogs' bark isn't a problem, and she can't say that's why the reserve closes early in winter every year.\n"
+        report = prov.check_article(article, self.CORPUS, check_network=False)
+        self.assertEqual(report.quotes_checked, 0)
+
+    def test_guillemets_and_german_quotes_are_checked(self) -> None:
+        article = ("## T\nEl director dijo \u00abtenemos que proteger cada hembra que queda en libertad en esta zona\u00bb ayer.\n\n"
+                   "Er sagte \u201ewir m\u00fcssen die Tiere sch\u00fctzen, solange es irgendwie geht, immer\u201c gestern.\n")
+        report = prov.check_article(article, self.CORPUS, check_network=False)
+        self.assertEqual(len(report.unmatched_quotes), 2)
+
+    def test_ellipsis_pieces_must_appear_in_the_order_given(self) -> None:
+        corpus = prov.normalize_text("second part of the sentence runs here then the first part of the sentence comes last")
+        self.assertFalse(prov.quote_in_corpus("the first part of the sentence ... second part of the sentence runs here", corpus))
+        self.assertTrue(prov.quote_in_corpus("second part of the sentence ... the first part of the sentence comes last", corpus))
+
+
+class DoiScopeTests(unittest.TestCase):
+    def test_a_fabricated_doi_in_the_body_is_checked(self) -> None:
+        article = "## T\nThe finding was published in a journal (doi:10.9999/does.not.exist) last year.\n"
+        report = prov.check_article(article, [], json_fetcher=FakeCrossref(), url_checker=lambda url: 200)
+        self.assertEqual(report.dois["10.9999/does.not.exist"]["status"], "not_found")
+        self.assertTrue(report.needs_repair())
+
+    def test_a_body_doi_is_not_title_compared(self) -> None:
+        article = "## T\nThe finding appeared in an unrelated sentence (doi:10.5555/other) here.\n"
+        report = prov.check_article(article, [], json_fetcher=FakeCrossref(), url_checker=lambda url: 200)
+        self.assertEqual(report.dois["10.5555/other"]["status"], "ok")
+
+
+class VerbatimTierTests(unittest.TestCase):
+    QUOTE = '"the population fell steadily across all of the surveyed colonies during that decade"'
+
+    def test_a_quote_found_only_in_a_fetch_answer_is_reported_as_summary_only(self) -> None:
+        article = f"## T\nThe report says {self.QUOTE}.\n"
+        answer = "The page states: the population fell steadily across all of the surveyed colonies during that decade."
+        report = prov.check_article(article, [answer], verbatim_corpus=["unrelated page text"], check_network=False)
+        self.assertEqual(report.unmatched_quotes, [])
+        self.assertEqual(len(report.summary_only_quotes), 1)
+        self.assertTrue(report.reader_should_be_told())
+        self.assertFalse(report.needs_repair())  # one is tolerated, three are not
+
+    def test_three_summary_only_quotes_need_repair(self) -> None:
+        quotes = [f'"the survey number {n} found that the population fell steadily across the colonies"' for n in range(3)]
+        article = "## T\n" + "\n\n".join(f"The report says {q}." for q in quotes) + "\n"
+        answer = " ".join(q.strip('"') for q in quotes)
+        report = prov.check_article(article, [answer], verbatim_corpus=[""], check_network=False)
+        self.assertEqual(len(report.summary_only_quotes), 3)
+        self.assertTrue(report.needs_repair())
+        self.assertIn("fetch summary", report.repair_brief())
+
+    def test_a_quote_in_the_page_text_is_verbatim(self) -> None:
+        article = f"## T\nThe report says {self.QUOTE}.\n"
+        page = "Page text: the population fell steadily across all of the surveyed colonies during that decade."
+        report = prov.check_article(article, [page], verbatim_corpus=[page], check_network=False)
+        self.assertEqual(report.summary_only_quotes, [])
+
+    def test_without_a_verbatim_corpus_nothing_is_demoted(self) -> None:
+        article = f"## T\nThe report says {self.QUOTE}.\n"
+        report = prov.check_article(article, ["the population fell steadily across all of the surveyed colonies during that decade"],
+                                    check_network=False)
+        self.assertEqual(report.summary_only_quotes, [])

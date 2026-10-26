@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -163,6 +164,14 @@ def start_run_attempt(date: str) -> dict[str, Any]:
         report["notes"] = list(prior["notes"])
     if prior.get("usage"):  # a new attempt (or the first stage after the conductor's probe) must not erase what the day has spent
         report["usage"] = prior["usage"]
+    # The source audit runs once a day and is never repeated by a later attempt, but every assemble re-enters this function once the
+    # previous attempt has finished. Dropping the audit here made the delivery gate refuse every send after a second pass.
+    for key in ("source_audit", "delivery_audit_waiver"):
+        if prior.get(key):
+            report[key] = prior[key]
+    audit_timing = (prior.get("timings") or {}).get("source_audit")
+    if audit_timing:
+        report["timings"]["source_audit"] = audit_timing
     write_run_report(report)
     return report
 
@@ -208,6 +217,9 @@ def stage_prerequisites_satisfied(report: dict[str, Any], step: str) -> tuple[bo
     if visual_step.get("status") not in {"passed", "warning", "bypassed"}:
         return False, "Delivery blocked until visual_qa completes"
 
+    if report.get("delivery_audit_waiver"):
+        # The conductor decided to ship a briefing built from an incomplete source audit and said so in the editor's notes.
+        return True, None
     source_audit = report.get("source_audit") or {}
     if source_audit.get("status") not in {"complete", "fixture", "degraded"}:
         return False, f"Delivery blocked until source_audit completes; current status={source_audit.get('status')}"
@@ -223,7 +235,14 @@ def _atomic_write(path: Path, text: str) -> None:
     """Readers (the delivery gate, the dashboard, another stage) must never see a half-written run report."""
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    for attempt in range(8):  # on Windows another reader (antivirus, OneDrive, -Diagnose) can briefly hold the target open
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 7:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def write_run_report(report: dict[str, Any]) -> Path:

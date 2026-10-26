@@ -126,6 +126,9 @@ if scenario in {"combined", "combined_corrupt"}:
     (animal_gen / f"claude-animal-briefing-{DATE}-conductor.json").write_text(json.dumps(
         {"date": DATE, "edition": "animal", "delivered": {"held": "carried inside the daily briefing", "articles": 2}}), encoding="utf-8")
 
+if scenario == "audit_incomplete":
+    cc.Conductor.audit_gate_issue = lambda self: "systemic source-check failures"
+
 conductor = cc.Conductor(
     edition=edition, date=DATE, scripts_dir=SCRIPTS, backend=llm.FakeBackend(script), runner=runner, check_network=False,
     audit_fixture=fixture, now=lambda: datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc), sleep=lambda s: None,
@@ -171,5 +174,8 @@ import run_reporting  # noqa: E402
 usage = (run_reporting.load_run_report(DATE).get("usage") or {}).get("totals") or {}
 out["usage_calls"] = usage.get("calls")
 out["usage_cost"] = usage.get("cost_usd")
+_report = run_reporting.load_run_report(DATE)
+out["gate"] = list(run_reporting.stage_prerequisites_satisfied(_report, "delivery"))
+out["audit_waiver"] = _report.get("delivery_audit_waiver")
 out["accounting_errors"] = [e["message"] for e in conductor.state.state["events"] if "accounting failed" in e["message"]]
 print("E2E_RESULT " + json.dumps(out))

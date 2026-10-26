@@ -14,6 +14,12 @@ MATCHES = {
     "Old synonymus": {"matchType": "EXACT", "canonicalName": "Loxodonta africana", "status": "SYNONYM", "rank": "SPECIES", "usageKey": 3, "acceptedUsageKey": 2},
     "Newly describa": {"matchType": "HIGHERRANK", "canonicalName": "Newly", "status": "ACCEPTED", "rank": "GENUS", "usageKey": 4},
 }
+MATCHES["Myrmecobius fasciatum"] = {"matchType": "FUZZY", "canonicalName": "Myrmecobius fasciatus", "status": "ACCEPTED", "rank": "SPECIES",
+                                    "usageKey": 1, "confidence": 98}
+MATCHES["Myrmecobius novaeguineae"] = {"matchType": "FUZZY", "canonicalName": "Myrmecobius fasciatus", "status": "ACCEPTED", "rank": "SPECIES",
+                                       "usageKey": 1, "confidence": 80}
+MATCHES["Myrmecobius fasciatuz"] = {"matchType": "FUZZY", "canonicalName": "Myrmecobius fasciatus", "status": "ACCEPTED", "rank": "SPECIES",
+                                    "usageKey": 1, "confidence": 70}
 IUCN = {1: {"code": "NT", "category": "NEAR_THREATENED"}, 2: {"code": "EN", "category": "ENDANGERED"}}
 
 
@@ -47,6 +53,28 @@ ARTICLE = """## T
 
 Prose mentions *Loxodonta africana* again and the plain words Genus species without italics.
 """
+
+
+class FuzzyMatchTests(unittest.TestCase):
+    """Review T15: a newly described species is often fuzzily matched to a congener; it must not be "corrected" into the wrong animal."""
+
+    def check(self, name: str):
+        return tax.check_article_taxonomy(f"## T\nThe animal *{name}* was described this year.\n", FakeGbif())
+
+    def test_a_confident_near_identical_match_is_a_misspelling(self) -> None:
+        report = self.check("Myrmecobius fasciatum")
+        self.assertEqual(report.misspellings, {"Myrmecobius fasciatum": "Myrmecobius fasciatus"})
+
+    def test_a_different_epithet_that_gbif_merely_resembles_is_not_corrected(self) -> None:
+        report = self.check("Myrmecobius novaeguineae")
+        self.assertEqual(report.misspellings, {})
+        self.assertIn("Myrmecobius novaeguineae", report.not_in_backbone)
+        self.assertFalse(report.needs_repair())
+
+    def test_a_low_confidence_match_is_not_corrected_even_when_the_strings_are_close(self) -> None:
+        report = self.check("Myrmecobius fasciatuz")
+        self.assertEqual(report.misspellings, {})
+        self.assertFalse(report.needs_repair())
 
 
 class LookupTests(unittest.TestCase):

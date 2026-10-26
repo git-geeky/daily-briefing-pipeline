@@ -31,7 +31,20 @@ _INJECTION_RE = re.compile(
     r"|\byou are (?:now )?(?:an? )?(?:ai|language model|llm|assistant|chatbot)\b"
     r"|\bas an ai (?:language )?model\b|\bnew instructions:"
     r"|</?(?:system|assistant|instructions?)>"
-    r"|\b(?:ai|llm) (?:agents?|assistants?|systems?|crawlers?|models?),? (?:please|must|should|visit|ignore|do not|are instructed))"
+    r"|\b(?:ai|llm) (?:agents?|assistants?|systems?|crawlers?|models?),? (?:please|must|should|visit|ignore|do not|are instructed)"
+    # The scrub is a best-effort filter, not the control (the prompts say fetched content is data, never instructions): these cover the
+    # commonest rephrasings, role-addressed lines and other languages.
+    r"|\b(?:please |kindly )?(?:ignore|disregard|forget) (?:everything|anything|all|the above|the text|the content|what)\b[^.\n]{0,30}\b(?:above|before|earlier|previous|prior|instead)\b"
+    r"|\b(?:note|message|instruction)s? (?:to|for) (?:claude|the (?:ai|assistant|model|llm|summari[sz]er)|any (?:ai|llm|assistant))"
+    r"|\b(?:claude|assistant|summari[sz]er|language model|chatbot)\b[^.\n]{0,40}\b(?:ignore|disregard|your (?:real|true|actual) (?:task|goal|instructions?)|must now|should now|when (?:you )?(?:summari[sz]e|read|answer))"
+    r"|\byour (?:real|true|actual|new) (?:task|goal|job|instructions?) (?:is|are)\b|^\s*system override\b|\bnew (?:task|instructions?):"
+    r"|^\s*\[(?:system|assistant|inst|instructions?)\]|^\s*(?:system|assistant)\s*:\s*\S"
+    r"|ignorez? (?:toutes )?les (?:instructions|consignes) (?:pr[eé]c[eé]dentes|ci-dessus)"
+    r"|ignorier(?:e|en)? (?:alle )?(?:vorherigen|obigen|bisherigen|vorangegangenen) (?:anweisungen|instruktionen|befehle)"
+    r"|ignora(?:r)? (?:todas )?las (?:instrucciones|indicaciones) (?:anteriores|previas)"
+    r"|negeer (?:alle )?(?:eerdere|vorige|bovenstaande) (?:instructies|opdrachten)"
+    r"|ignora (?:tutte )?le istruzioni (?:precedenti|sopra)"
+    r"|以前の指示を無視|上記の指示を無視|これまでの指示を無視|指示を無視して|忽略(?:以上|之前|上面)的?(?:所有)?(?:指令|指示|说明)|이전 지시(?:를|사항을)? 무시)"
 )
 _DROP_TAGS = ("script", "style", "nav", "header", "footer", "aside", "form", "noscript", "svg", "iframe", "button", "dialog")
 _META_FIELDS = ("citation_title", "citation_author", "citation_journal_title", "citation_publication_date", "citation_date", "citation_doi",
@@ -83,8 +96,9 @@ class Dossier:
                 text = source.text if len(source.text) <= share else _cut(source.text, share)
                 cut = " truncated=\"yes\"" if (source.truncated or len(text) < len(source.text)) else ""
                 header = [f"title: {source.title}"] if source.title else []
-                body = "\n".join([*header, *source.meta, "", text]).strip().replace("</source>", "&lt;/source&gt;")
-                parts.append(f'<source n="{number}" url="{source.url}" kind="{source.kind}"{cut}>\n{body}\n</source>')
+                body = _neutralise_markup("\n".join([*header, *source.meta, "", text]).strip())
+                url = re.sub(r"[\s\"'<>]", lambda m: f"%{ord(m.group(0)):02X}", source.url)  # a URL cannot break out of the attribute
+                parts.append(f'<source n="{number}" url="{url}" kind="{source.kind}"{cut}>\n{body}\n</source>')
         if self.papers:
             parts.append("## Paper records (Europe PMC / Crossref)")
             parts += [_render_paper(p) for p in self.papers]
@@ -146,13 +160,31 @@ def _render_paper(paper: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------------------------
 def scrub(text: str) -> tuple[str, list[str]]:
     """Drop lines that read as instructions to an AI; return the clean text and what was removed."""
-    kept, removed = [], []
-    for line in text.splitlines():
-        if _INJECTION_RE.search(line):
-            removed.append(line.strip()[:160])
-        else:
-            kept.append(line)
+    lines = text.splitlines()
+    drop = [bool(_INJECTION_RE.search(line)) for line in lines]
+    for i in range(len(lines) - 1):
+        # An instruction can be split across two lines (block elements emit a newline); test each adjacent pair joined.
+        if not drop[i] and not drop[i + 1] and _INJECTION_RE.search(lines[i].strip() + " " + lines[i + 1].strip()):
+            drop[i] = drop[i + 1] = True
+    kept = [line for line, gone in zip(lines, drop) if not gone]
+    removed = [line.strip()[:160] for line, gone in zip(lines, drop) if gone]
     return "\n".join(kept), removed
+
+
+_HIDDEN_STYLE_RE = re.compile(r"(?i)(?:display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0(?:px|pt|em|rem|%)?\s*(?:;|$)|opacity\s*:\s*0(?:\.0+)?\s*(?:;|$))")
+_TAG_LIKE_RE = re.compile(r"<(?=[/A-Za-z!?])")
+
+
+def _is_hidden(tag: Any) -> bool:
+    attrs = getattr(tag, "attrs", None) or {}
+    if "hidden" in attrs or str(attrs.get("aria-hidden", "")).lower() == "true":
+        return True
+    return bool(_HIDDEN_STYLE_RE.search(str(attrs.get("style") or "")))
+
+
+def _neutralise_markup(text: str) -> str:
+    """Page text is placed between ``<source>`` fences in the writer's prompt: nothing in it may look like a tag."""
+    return _TAG_LIKE_RE.sub("&lt;", text)
 
 
 def _collapse(text: str) -> str:
@@ -178,7 +210,7 @@ def html_to_text(html: bytes | str) -> tuple[str, list[str], str]:
         soup = BeautifulSoup(html, "lxml")
     except Exception:  # noqa: BLE001 - lxml missing or choking: the stdlib parser is enough
         soup = BeautifulSoup(html, "html.parser")
-    title = (soup.title.get_text(" ", strip=True) if soup.title else "")[:300]
+    title = re.sub(r"\s+", " ", (soup.title.get_text(" ", strip=True) if soup.title else ""))[:300]
     meta: list[str] = []
     for tag in soup.find_all("meta"):
         name = str(tag.get("name") or tag.get("property") or "").strip().lower()
@@ -187,6 +219,12 @@ def html_to_text(html: bytes | str) -> tuple[str, list[str], str]:
             meta.append(f"{name}: {content[:600]}")
     for tag in soup.find_all(list(_DROP_TAGS)):
         tag.decompose()
+    for tag in soup.find_all(True):  # text a reader cannot see is not something the page "says": it is not shown and not evidence
+        try:
+            if _is_hidden(tag):
+                tag.decompose()
+        except Exception:  # noqa: BLE001 - an element already removed along with a hidden parent
+            continue
     for table in soup.find_all("table"):
         rows = []
         for tr in table.find_all("tr"):
@@ -250,6 +288,7 @@ def fetch_source(url: str, fetcher: WebFetcher, *, max_chars: int, max_bytes: in
         return doc
     text, doc.removed = scrub(text)
     doc.meta = [m for m in (scrub(m)[0] for m in doc.meta) if m.strip()]
+    doc.title = scrub(doc.title)[0].strip()
     if len(text.strip()) < 200 and not doc.meta:
         doc.note = "page held almost no readable text (script-rendered, paywalled or an error page)"
         return doc

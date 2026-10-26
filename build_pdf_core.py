@@ -28,7 +28,7 @@ from run_reporting import set_step_timing, update_run_report
 from validate_briefing import validate_briefing
 try:
     from PIL import Image
-    Image.MAX_IMAGE_PIXELS = None
+    Image.MAX_IMAGE_PIXELS = 120_000_000  # an explicit bound; downloads are also checked by net_safety_core.image_pixels_ok
     PIL_LANCZOS = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
 except Exception:
     Image = None
@@ -220,13 +220,21 @@ def download_image(url_or_path: str):
         path = IMG_CACHE / f"{h}.{ext}"
         if path.exists() and path.stat().st_size > 0:
             return path
-        req = urllib.request.Request(url_or_path, headers={
+        import requests
+
+        import net_safety_core
+
+        session = net_safety_core.mount_safe(requests.Session(), max_bytes=30_000_000)  # public addresses only; capped bodies
+        reply = session.get(url_or_path, timeout=20, headers={
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) DailyBriefing/1.0',
             'Accept': 'image/avif,image/webp,image/png,image/*,*/*;q=0.8',
         })
-        with urllib.request.urlopen(req, timeout=20) as r:
-            data = r.read()
-            ctype = r.headers.get("Content-Type", "").lower()
+        reply.raise_for_status()
+        data = reply.content
+        ctype = reply.headers.get("Content-Type", "").lower()
+        if not net_safety_core.image_pixels_ok(data):
+            print(f"  ! image dimensions too large (decompression-bomb guard): {url_or_path[:80]}")
+            return None
         is_svg = ext == "svg" or "svg" in ctype or looks_like_svg_bytes(data)
         if not is_svg and len(data) < 200:  # too small to be a real raster image
             return None

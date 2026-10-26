@@ -244,5 +244,92 @@ class CodexCommandTests(unittest.TestCase):
         self.assertEqual(argv[-1], "-")
 
 
+class ToolEchoTests(unittest.TestCase):
+    """Review T1: what the model itself sent (its search query, the prompt a redirect notice hands back) is not evidence."""
+
+    def stream(self, results):
+        events = [{"type": "assistant", "message": {"model": "m", "content": [
+            {"type": "tool_use", "id": f"t{i}", "name": name, "input": {"url": "https://e.org/x"}} for i, (name, _) in enumerate(results)]}}]
+        events.append({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": f"t{i}", "content": text} for i, (_, text) in enumerate(results)]}})
+        events.append({"type": "result", "subtype": "success", "is_error": False, "result": "done", "total_cost_usd": 0.01,
+                       "usage": {"input_tokens": 1, "output_tokens": 1}})
+        return lines_of(events)
+
+    def test_the_search_query_line_is_not_added_to_the_corpus(self) -> None:
+        invented = 'Web search results for query: "the entire population collapsed by 83 percent within two breeding seasons"\n\nNo results found.'
+        result = backend.parse_stream(self.stream([("WebSearch", invented)]))
+        joined = "\n".join(result.tool_corpus)
+        self.assertNotIn("83 percent", joined)
+        self.assertIn("No results found", joined)
+
+    def test_the_prompt_echoed_by_a_redirect_notice_is_not_added_to_the_corpus(self) -> None:
+        notice = ('REDIRECT DETECTED: The URL redirects to a different host.\n\nOriginal URL: https://doi.org/10.1/x\nRedirect URL: https://pub.org/x\n'
+                  'Status: 301\n\nTo complete your request, use WebFetch again with these parameters:\n- url: "https://pub.org/x"\n'
+                  '- prompt: "Quote the sentence stating that 91% of voles died in the first winter"')
+        result = backend.parse_stream(self.stream([("WebFetch", notice)]))
+        joined = "\n".join(result.tool_corpus)
+        self.assertNotIn("91%", joined)
+        self.assertIn("https://pub.org/x", joined)
+
+    def test_real_page_answers_are_kept(self) -> None:
+        result = backend.parse_stream(self.stream([("WebFetch", "The page says the population fell by 62% to 1,050 individuals.")]))
+        self.assertIn("62%", "\n".join(result.tool_corpus))
+
+
+class CostTelemetryTests(unittest.TestCase):
+    """Review COST-1: a reported cost of zero beside real token counts must not blind the run budget."""
+
+    def test_zero_reported_cost_with_tokens_is_estimated_and_marked(self) -> None:
+        events = [{"type": "assistant", "message": {"model": "claude-opus-5-5", "content": [{"type": "text", "text": "x"}]}},
+                  {"type": "result", "subtype": "success", "is_error": False, "result": "x", "total_cost_usd": 0,
+                   "usage": {"input_tokens": 100_000, "output_tokens": 20_000}}]
+        result = backend.parse_stream(lines_of(events))
+        self.assertGreater(result.cost_usd, 1.0)
+        self.assertTrue(result.cost_estimated)
+
+    def test_a_genuine_small_cost_is_kept(self) -> None:
+        result = backend.parse_stream(lines_of(SUCCESS_STREAM))
+        self.assertAlmostEqual(result.cost_usd, 0.00016)
+        self.assertFalse(result.cost_estimated)
+
+    def test_utilisation_telemetry_is_detected_as_missing_when_the_stream_changes_shape(self) -> None:
+        renamed = json.loads(json.dumps(SUCCESS_STREAM))
+        renamed[1]["rate_limit_info"]["windows"] = renamed[1]["rate_limit_info"].pop("unifiedWindows")
+        self.assertTrue(backend.parse_stream(lines_of(SUCCESS_STREAM)).rate_limit.has_utilization)
+        self.assertFalse(backend.parse_stream(lines_of(renamed)).rate_limit.has_utilization)
+
+
+class ChildEnvironmentTests(unittest.TestCase):
+    def test_private_settings_and_unrelated_credentials_are_not_passed_to_the_model_cli(self) -> None:
+        env = backend.child_environment({
+            "PATH": "/usr/bin", "HOME": "/home/u", "USERPROFILE": "C:\\Users\\u", "HTTPS_PROXY": "http://p:1", "ANTHROPIC_API_KEY": "k",
+            "CLAUDE_CODE_OAUTH_TOKEN": "t", "BRIEFING_DELIVER_COMMAND": "powershell C:\\Users\\u\\x.ps1", "BRIEFING_RECIPIENTS": "a@b.c",
+            "ANIMAL_BRIEFING_EXTRA_RECIPIENTS": "d@e.f", "GMAIL_APP_PASSWORD": "p", "GITHUB_TOKEN": "g", "AWS_SECRET_ACCESS_KEY": "s",
+            "OPENAI_API_KEY": "o", "SMTP_HOST": "h"}, extra={"CUSTOM": "1"})
+        self.assertEqual(sorted(env), ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CUSTOM", "HOME", "HTTPS_PROXY", "PATH", "USERPROFILE"])
+
+
+class ResetHintTests(unittest.TestCase):
+    def run_backend(self, events):
+        proc = FakeProc(lines_of(events))
+        return backend.ClaudeBackend(executable="claude", popen=lambda *a, **k: proc).run(backend.LLMRequest(stage="t", prompt="hello"))
+
+    def test_the_structured_timestamp_wins_over_the_prose(self) -> None:
+        events = [{"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": 1792995600}},
+                  {"type": "result", "subtype": "success", "is_error": True,
+                   "result": "You've hit your session limit \u00b7 resets 4:30pm (Asia/Tokyo)", "usage": {}}]
+        result = self.run_backend(events)
+        self.assertEqual(result.reset_hint, 1792995600)
+
+    def test_prose_without_a_zone_is_read_in_local_time_not_utc(self) -> None:
+        now = datetime(2026, 10, 26, 3, 0, tzinfo=timezone.utc)
+        epoch = backend.parse_reset_time("resets 4:30pm", now=now)
+        when = datetime.fromtimestamp(epoch, timezone.utc).astimezone()  # the machine's own zone
+        self.assertEqual((when.hour, when.minute), (16, 30))
+        self.assertGreater(epoch, now.timestamp())
+        self.assertLessEqual(epoch - now.timestamp(), 25 * 3600)
+
+
 if __name__ == "__main__":
     unittest.main()

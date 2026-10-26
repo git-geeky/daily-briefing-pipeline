@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+import net_safety_core
+
 GROUPS = ("mammal", "bird", "fish_marine", "herp", "invertebrate", "other")
 MATERIAL_ORDER = {"deep": 3, "moderate": 2, "thin": 1}
 SUCCESS_STATUSES = {"checked_no_relevant_update", "checked_relevant_update", "checked_incorporated", "checked_with_update"}
@@ -240,7 +242,7 @@ def validate_slate(
         reasons: list[str] = []
         if len(title) < 15:
             reasons.append("missing or too-short title")
-        sources = [s for s in entry.get("sources") or [] if isinstance(s, dict) and str(s.get("url") or "").startswith("http")]
+        sources = [s for s in entry.get("sources") or [] if isinstance(s, dict) and net_safety_core.looks_public(str(s.get("url") or ""))]
         if len(sources) < 2:
             reasons.append("fewer than 2 sources with URLs")
         group = str(entry.get("group") or "other").lower().replace("/", "_").replace(" ", "_")

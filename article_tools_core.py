@@ -20,7 +20,10 @@ from typing import Any
 _FENCE_RE = re.compile(r"(?m)^\s*```[a-z]*\s*$")
 _IMAGE_LINE_RE = re.compile(r"(?m)^[ \t]*!\[[^\]]*\]\([^)]*\)[ \t]*\n?")
 _MARKER_RE = re.compile(r"(?m)^[ \t]*<!--\s*story:[^>]*-->[ \t]*\n?")
-_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((?:https?://|www\.)[^)\s]+\)")
+# A link without a scheme (www.example.org/login, example.org/phish) is still a link a reader can follow. A bare domain name used as
+# a name ("reported on nature.com") has no path and is left alone.
+SCHEMELESS_URL_RE = re.compile(r"(?i)(?<![\w@/.-])(?:www\.[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?:/[^\s)>\]]*)?|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/[^\s)>\]]+)")
 _DOI_URL_RE = re.compile(r"https?://(?:dx\.)?doi\.org/(10\.[^\s)\]>]+)", re.I)
 _BARE_URL_RE = re.compile(r"\s*<?https?://[^\s)>\]]+>?")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
@@ -105,16 +108,18 @@ def _strip_body_links(text: str) -> tuple[str, int]:
             protected = heading.group(2).strip().lower().startswith(_SOURCE_BLOCK_HEADINGS)
             result.append(line)
             continue
-        if protected or not re.search(r"https?://", line) or line.lstrip().startswith("![") or "<!--" in line:
+        if protected or not (re.search(r"https?://", line) or SCHEMELESS_URL_RE.search(line)) or line.lstrip().startswith("![") or "<!--" in line:
             result.append(line)
             continue
         original = line
         line = _DOI_URL_RE.sub(lambda m: f"doi:{m.group(1)}", line)
         line = _MD_LINK_RE.sub(lambda m: m.group(1), line)
         line = _BARE_URL_RE.sub("", line)
+        line = SCHEMELESS_URL_RE.sub("", line)
         line = re.sub(r"\(\s*\)", "", line)
         line = re.sub(r"\s{2,}", " ", line).rstrip()
-        removed += len(re.findall(r"https?://", original)) - len(re.findall(r"https?://", line))
+        count = lambda text: len(re.findall(r"https?://", text)) + len(SCHEMELESS_URL_RE.findall(text))  # noqa: E731
+        removed += count(original) - count(line)
         result.append(line)
     return "\n".join(result), removed
 

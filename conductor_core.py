@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -72,7 +73,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "review": {"model": "opus", "effort": "medium", "optional": True},
     },
     "budget": {
-        "max_cost_usd_per_run": 40.0, "max_cost_usd_per_article": 4.0,
+        "max_cost_usd_per_run": 40.0, "max_cost_usd_per_article": 4.0, "max_output_tokens_per_run": 1_500_000,
         "defer_if_five_hour_above": 0.80, "defer_if_seven_day_above": 0.90,
         "stop_launching_above": 0.92,
     },
@@ -132,7 +133,14 @@ def atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    for attempt in range(8):  # on Windows another reader (antivirus, OneDrive sync, -Diagnose) can briefly hold the target open
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 7:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def load_json(path: Path, default: Any = None) -> Any:
@@ -234,6 +242,24 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
+def boot_epoch() -> float | None:
+    """Seconds since the epoch at which this machine booted (None when unknown). A pid recorded before a reboot means nothing after it."""
+    try:
+        if os.name == "nt":  # pragma: no cover - exercised only on the Windows host
+            import ctypes
+
+            kernel32 = ctypes.WinDLL("kernel32")
+            kernel32.GetTickCount64.restype = ctypes.c_ulonglong
+            return float(round(time.time() - kernel32.GetTickCount64() / 1000.0))
+        with open("/proc/stat", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("btime"):
+                    return float(line.split()[1])
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 class FileLock:
     """One conductor per edition-day. Created atomically; a lock is taken over when its process is gone or it is
     older than ``stale_minutes`` (a hung run), so a killed run never blocks the next scheduled repetition."""
@@ -256,7 +282,7 @@ class FileLock:
                     return False
                 continue
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(json.dumps({"pid": os.getpid(), "started_epoch": time.time()}))
+                handle.write(json.dumps({"pid": os.getpid(), "started_epoch": time.time(), "boot_epoch": boot_epoch()}))
             self.held = True
             return True
         return False
@@ -271,7 +297,9 @@ class FileLock:
                 return True
             info = {}
         age = time.time() - float(info.get("started_epoch", 0) or 0)
-        if info.get("pid") and self.alive(int(info["pid"])) and age < self.stale:
+        booted_then, booted_now = info.get("boot_epoch"), boot_epoch()
+        rebooted = bool(booted_then and booted_now and abs(float(booted_then) - booted_now) > 600)  # tolerance for clock and sleep drift
+        if info.get("pid") and not rebooted and self.alive(int(info["pid"])) and age < self.stale:
             return False
         self.reclaimed = info
         try:
@@ -320,6 +348,7 @@ class ArticleOutcome:
     blocking: list[str] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
     terminal: bool = False            # a failed verdict reached after full repair: resuming must not buy it again
+    failed_passes: int = 0            # launches that ended in a failure without a verdict; two in a row make it terminal
 
 
 class Conductor:
@@ -453,6 +482,7 @@ class Conductor:
     def _record(self, stage: str, request: llm.LLMRequest, result: llm.LLMResult) -> None:
         with self._cost_lock, self.state._lock:
             self.state.state["spent_usd"] = round(float(self.state.state.get("spent_usd", 0.0)) + result.cost_usd, 4)
+            self.state.state["output_tokens"] = int(self.state.state.get("output_tokens", 0)) + int(result.output_tokens or 0)
             if result.rate_limit.status != "unknown":
                 self.last_rate_limit = result.rate_limit
                 self.state.state["rate_limit"] = {
@@ -485,6 +515,11 @@ class Conductor:
         if budget.get("max_cost_usd_per_run") and spent >= float(budget["max_cost_usd_per_run"]):
             self._stop.set()
             raise Deferred(f"run budget of ${budget['max_cost_usd_per_run']:.2f} reached (${spent:.2f} spent)", kind="budget")
+        # An independent cap on what the models wrote: it does not depend on the cost field the CLI reports.
+        produced = int(self.state.state.get("output_tokens", 0))
+        if budget.get("max_output_tokens_per_run") and produced >= int(budget["max_output_tokens_per_run"]):
+            self._stop.set()
+            raise Deferred(f"output-token cap of {int(budget['max_output_tokens_per_run']):,} reached ({produced:,} written)", kind="budget")
         info = self.last_rate_limit
         if launching and info.status == "rejected":
             self._stop.set()
@@ -558,7 +593,14 @@ class Conductor:
                              f"{self.edition.label} did not run on {self.date} because it is disabled "
                              "(conductor.enabled=false or BRIEFING_DISABLED=1). Remove the flag to resume.")
             return EXIT_DISABLED
-        if self.state.state.get("delivered"):
+        delivered = self.state.state.get("delivered")
+        if delivered and delivered.get("held") and self._release_due():
+            self.log("the briefing carrying this edition went out without it (or is overdue): sending this edition on its own")
+            self.state.state.pop("delivered", None)
+            self.state.state["stages"].pop("deliver", None)
+            self.state.save()
+            finish_only = True
+        elif delivered:
             self.log("already delivered; nothing to do")
             return EXIT_OK
         if not self.lock.acquire():
@@ -633,16 +675,17 @@ class Conductor:
                 return self._finish(degraded=True)
             except Exception as inner:  # noqa: BLE001 - includes a crash inside the degraded path itself
                 exc = StageFailed("finish", f"{exc.reason}; degraded attempt also failed: {inner}")
-        self._alert_once(f"fail-{exc.stage}", f"{self.edition.label}: briefing failed for {self.date}",
-                         f"{exc}\n\n" + self.diagnosis())
+        self._alert_once(f"fail-{exc.stage}-{hashlib.sha1(exc.reason.encode('utf-8')).hexdigest()[:6]}",
+                         f"{self.edition.label}: briefing failed for {self.date}", f"{exc}\n\n" + self.diagnosis())
         return EXIT_FAILED
 
     def _alert_once(self, key: str, subject: str, body: str) -> None:
         marker = f"{self.date}:{key}"
         if marker in self.state.state["alerts_sent"]:
             return
-        self.state.state["alerts_sent"].append(marker)
         sent = self.notifier.send(subject, body, key=key)
+        if sent or not self.notifier.command:  # a failed email leg is retried by the next event; the file is always written
+            self.state.state["alerts_sent"].append(marker)
         self.log(f"alert {key}: {'emailed' if sent else 'written to alerts folder'}")
         self.state.save()
 
@@ -665,6 +708,9 @@ class Conductor:
             raise StageFailed("finish", f"only {len(articles)} finished article(s); minimum is {self.total_min()}")
         if len(articles) < self.total_target():
             notes.append(f"{len(articles)} of {self.total_target()} target stories were finished")
+        waived = self.state.state["stages"].get("audit", {}).get("waived")
+        if waived:
+            notes.append(f"the source audit was incomplete ({waived}); stories rest on the sources that could be opened")
         for section, quota in self.plan().items():
             have = sum(1 for a in articles if self.section_of(a["story"]) == section)
             if have < quota["min"]:
@@ -701,6 +747,14 @@ class Conductor:
             info = result.rate_limit
             if info.status == "rejected":
                 raise Deferred("account is rate limited", until=info.resets_at)
+            if self.backend.name == "claude" and not info.has_utilization:
+                # The 80/90/92 % guards read these numbers; without them they never fire. Keep running (an API-key account has no
+                # such windows), but say so loudly and lean on the cost and output-token caps, which do not depend on them.
+                self.log("preflight: the CLI reported no five-hour/seven-day utilisation; limit guards are inactive")
+                self._alert_once("telemetry-missing", f"{self.edition.label}: usage-limit telemetry is missing",
+                                 "The claude CLI's rate_limit_event carried no five-hour/seven-day utilisation, so the pipeline cannot see "
+                                 "how close the subscription is to its limits. The run continues under the per-run cost and output-token "
+                                 "caps only. If the CLI was updated, check whether its stream format changed (llm_backend_core.parse_stream).")
             if (info.five_hour_utilization or 0) >= float(budget["defer_if_five_hour_above"]):
                 raise Deferred(f"five-hour window is {info.five_hour_utilization:.0%} used", until=info.resets_at)
             if (info.seven_day_utilization or 0) >= float(budget["defer_if_seven_day_above"]):
@@ -722,9 +776,29 @@ class Conductor:
         if self.audit_fixture:
             args += ["--fixture", str(self.audit_fixture)]
         code, output = self.run_script("generate_source_audit.py", *args, timeout_key="audit")
-        if code not in (0, 1):  # exit 1 is "audit status failed" (systemic source failure): continue, the gate reports it
+        if code not in (0, 1):  # exit 1 is "audit status failed" (systemic source failure): continue, say so, do not die
             raise StageFailed("audit", f"source audit crashed (exit {code}): {output[-300:]}")
-        self.state.mark("audit", "done", exit=code)
+        issue = self.audit_gate_issue()
+        if issue:
+            # The delivery gate (PowerShell side) refuses to send after an incomplete audit. The conductor's policy is to degrade, not to
+            # die after spending the money, so the waiver is recorded where the gate looks, and the editor's note says so.
+            import run_reporting
+
+            run_reporting.update_run_report(self.date, delivery_audit_waiver=issue)
+            self.log(f"source audit incomplete ({issue}); delivery gate waived, the briefing will say so")
+        self.state.mark("audit", "done", exit=code, **({"waived": issue} if issue else {}))
+
+    def audit_gate_issue(self) -> str:
+        import run_reporting
+
+        audit = run_reporting.load_run_report(self.date).get("source_audit") or {}
+        if audit.get("status") not in {"complete", "fixture", "degraded"}:
+            return f"audit status {audit.get('status') or 'missing'}"
+        if not audit.get("all_sources_checked"):
+            return "the full catalog was not checked"
+        if audit.get("systemic_failure"):
+            return "systemic source-check failures"
+        return ""
 
     # ---- stage: ingest -----------------------------------------------------------------
     def prior_titles(self) -> list[str]:
@@ -1052,6 +1126,28 @@ class Conductor:
     def draft_path(self, story_id: str) -> Path:
         return self.articles_dir / f"{story_id}.draft.json"
 
+    def _trusted_tool_corpus(self, result: llm.LLMResult, outcome: ArticleOutcome) -> list[str]:
+        """What the writer's tools returned counts as evidence only if every address it opened is public. A writer steered (by a
+        planted page) to the desktop's own network gets its results discarded, the article flagged and an alert raised."""
+        if not self.check_network:
+            return list(result.tool_corpus)
+        import net_safety_core
+
+        bad: list[str] = []
+        for url in dict.fromkeys(result.fetched_urls):
+            try:
+                net_safety_core.check_public_url(url)
+            except net_safety_core.UnsafeUrl as exc:
+                bad.append(f"{url[:100]} ({exc})")
+        if not bad:
+            return list(result.tool_corpus)
+        outcome.flags.append(f"the writer opened non-public address(es); its tool results were discarded: {'; '.join(bad)[:300]}")
+        self.log(f"article {outcome.story_id}: {outcome.flags[-1]}")
+        self._alert_once("unsafe-fetch", f"{self.edition.label}: a writer opened a non-public address",
+                         f"Story {outcome.story_id}: {'; '.join(bad)[:600]}\n\nThe fetched text was not used as evidence. A source page may be trying to "
+                         "steer the model toward the local network; review the story's sources.")
+        return []
+
     def _save_draft(self, sid: str, article: str, corpus: list[str], outcome: ArticleOutcome) -> None:
         """The paid-for draft survives a limit or a crash: resuming goes straight to the repair loop, not back to $0.28 of writing."""
         atomic_write(self.draft_path(sid), json.dumps(
@@ -1081,7 +1177,7 @@ class Conductor:
             "PRIOR_MARKER": f"; prior: {story['prior_story_id']}" if story.get("prior_story_id") else "",
             "DOSSIER": NO_DOSSIER,
         }
-        outcome = ArticleOutcome(sid, "failed")
+        outcome = ArticleOutcome(sid, "failed", failed_passes=int(existing.get("failed_passes", 0)))
         corpus: list[str] = []
         draft = load_json(self.draft_path(sid), None)
         if isinstance(draft, dict) and draft.get("article"):
@@ -1105,7 +1201,7 @@ class Conductor:
                 outcome.reason = f"{result.error_kind}: {result.error_detail[:160]}"
                 self._save_article_meta(sid, outcome)
                 return outcome
-            corpus += result.tool_corpus
+            corpus += self._trusted_tool_corpus(result, outcome)
             raw = result.text.strip()
             atomic_write(self.articles_dir / f"{sid}.raw.md", raw + "\n")
             if raw.upper().startswith("SKIP"):
@@ -1126,8 +1222,10 @@ class Conductor:
         tax = None
         for round_no in range(int(self.settings["repairs_per_article"]) + 1):
             blocking, item = self.check_article_text(article, section)
+            # Quotations are verified against page text the script fetched; what a fetch call *summarised* counts for figures only.
             prov = provenance_core.check_article(
-                article, corpus, json_fetcher=self.json_fetcher, url_checker=self.url_checker, check_network=self.check_network)
+                article, corpus, json_fetcher=self.json_fetcher, url_checker=self.url_checker, check_network=self.check_network,
+                verbatim_corpus=dossier.corpus() if dossier else None)
             tax = self.check_taxonomy(article)
             tax_bad = bool(tax and tax.needs_repair())
             word_only = bool(blocking) and all("hard word floor" in b for b in blocking)
@@ -1153,7 +1251,7 @@ class Conductor:
             if not fix.ok:
                 outcome.flags.append(f"repair call failed: {fix.error_kind}")
                 break
-            corpus += fix.tool_corpus
+            corpus += self._trusted_tool_corpus(fix, outcome)
             if fix.text.strip().upper().startswith("SKIP"):
                 outcome.status, outcome.reason = "skipped", fix.text.strip()[:200]
                 self._save_article_meta(sid, outcome)
@@ -1175,9 +1273,10 @@ class Conductor:
                 outcome.flags.append(f"taxonomy: {len(tax.misspellings)} name(s) and {len(tax.status_mismatches)} status entr(ies) not confirmed against GBIF")
         outcome.blocking = blocking
         fatal_dois = [doi for doi, info in prov.dois.items() if info.get("status") == "not_found"]
-        if prov.needs_repair():
+        if prov.needs_repair() or prov.reader_should_be_told():
             outcome.flags.append(
                 f"unverified after repair: {len(prov.unmatched_numbers)} number(s), {len(prov.unmatched_quotes)} quotation(s), "
+                f"{len(prov.summary_only_quotes)} quotation(s) seen only in a fetch summary, "
                 f"{len(prov.bad_dois)} DOI(s), {len(prov.dead_urls)} dead URL(s)")
         # A repair that never ran (call failed, unusable output) is a transient fault: keep the draft and retry on resume.
         # A verdict reached after repair is deterministic: marking it terminal stops a resume from paying for it again.
@@ -1201,6 +1300,10 @@ class Conductor:
         return outcome
 
     def _save_article_meta(self, sid: str, outcome: ArticleOutcome) -> None:
+        if outcome.status == "failed" and not outcome.terminal:
+            # Every 30-minute repetition would otherwise buy the same broken story again (3 attempts x the per-article budget).
+            outcome.failed_passes += 1
+            outcome.terminal = outcome.failed_passes >= 2
         atomic_write(self.article_meta_path(sid), json.dumps(outcome.__dict__, indent=1, ensure_ascii=False) + "\n")
         self.state.mark(f"article:{sid}", outcome.status, words=outcome.words, cost=round(outcome.cost_usd, 3))
         if outcome.status in {"done", "skipped"}:
@@ -1267,7 +1370,7 @@ class Conductor:
                     continue
                 if sid in dossiers:  # the writer had no tools: every figure and quotation must come from its dossier
                     prov = provenance_core.check_article(text, dossiers[sid].corpus(), check_network=False)
-                    if prov.unmatched_quotes or (prov.numbers_checked >= 4 and prov.unmatched_ratio > 0.35):
+                    if prov.unmatched_quotes or prov.needs_repair() or len(prov.unmatched_numbers) >= 3:
                         self.log(f"digest item {sid} dropped: figures or quotations not found in its dossier")
                         continue
                 items.append(text)
@@ -1284,6 +1387,26 @@ class Conductor:
                                             image_metadata=manifest.load_image_metadata(self.date), source_audit=audit)
         result = manifest.evaluate_item_rules(section, item, manifest.SECTION_RULES[section], audit_available=bool(audit))
         return result["blocking"], item
+
+    def _synthesis_unsupported(self, text: str, articles: list[dict[str, Any]]) -> str:
+        """The header and the closing analysis may only restate what the day's articles say. Checked with the articles themselves as
+        the corpus (no network): an invented quotation, or a short text of figures none of the articles contain, is reported."""
+        import provenance_core
+
+        try:
+            corpus = [a["path"].read_text(encoding="utf-8") for a in articles]
+        except OSError:
+            return ""
+        prov = provenance_core.check_article(text, corpus, check_network=False)
+        problems = []
+        if prov.unmatched_quotes:
+            problems.append(f"{len(prov.unmatched_quotes)} quotation(s) found in no article")
+        # Counting words ("17 stories", "the 3 sections") are the synthesis's own arithmetic, not claims about the world.
+        ceiling = len(articles) + 10
+        remaining = [n for n in prov.unmatched_numbers if not (n["text"].strip().isdigit() and int(n["text"].strip()) <= ceiling)]
+        if len(remaining) >= 3 and len(remaining) / max(prov.numbers_checked, 1) > 0.5:
+            problems.append("figures found in no article: " + ", ".join(n["text"] for n in remaining[:5]))
+        return "; ".join(problems)
 
     # ---- stage: header -----------------------------------------------------------------
     def part_label(self, section: str) -> str:
@@ -1306,6 +1429,13 @@ class Conductor:
 
         summaries = self.summaries_for(articles)
         titles = [s["title"] for s in summaries]
+        key = hashlib.sha1("|".join(titles).encode("utf-8")).hexdigest()[:12]
+        previous = self.state.state["stages"].get("header", {})
+        header_path = Path(self.paths.fragment_path("header", self.date))
+        if (previous.get("status") == "done" and previous.get("key") == key and header_path.exists()
+                and bool(previous.get("fallback")) == (previous.get("source") == "fallback")):
+            self.log("header: reusing the accepted header (same stories)")  # every re-entry of the last mile used to buy a new header call
+            return
         low, high = (int(v) for v in self.edition.header.get("exec_summary_words", [250, 750]))
         min_cross = int(self.edition.header.get("min_cross_references", 2))
         cross_label = str(self.edition.header.get("cross_reference_label", "Cross-currents"))
@@ -1330,7 +1460,10 @@ class Conductor:
                     middle, fixes = tools.repair_cross_references(result.text.strip(), titles)
                     words = len(middle.split(f"### {cross_label}")[0].replace("## Executive Summary", "").split())
                     refs = tools.extract_header_titles(middle)
-                    if low <= words <= high and len(refs) >= min_cross and all(r in titles for r in refs):
+                    unsupported = self._synthesis_unsupported(middle, articles)
+                    if unsupported:
+                        self.log(f"header: model output rejected (not supported by the articles: {unsupported}); using fallback")
+                    elif low <= words <= high and len(refs) >= min_cross and all(r in titles for r in refs):
                         header_text = frame(middle)
                     else:
                         self.log(f"header: model output rejected (words={words}, refs={len(refs)}); using fallback")
@@ -1342,7 +1475,7 @@ class Conductor:
                                                      summaries=summaries, summary_words=(low, high), cross_label=cross_label,
                                                      min_cross=min_cross)
         atomic_write(Path(self.paths.fragment_path("header", self.date)), header_text)
-        self.state.mark("header", "done", source=source, fallback=source == "fallback")
+        self.state.mark("header", "done", source=source, fallback=source == "fallback", key=key)
 
     # ---- stage: closing analysis (editions with a closing section) ---------------------------
     def stage_closing(self, articles: list[dict[str, Any]]) -> None:
@@ -1381,6 +1514,10 @@ class Conductor:
                     findings = "The output had no `## Title` heading."
                     continue
                 blocking, _item = self._check_section_item(closing, candidate)
+                unsupported = self._synthesis_unsupported(candidate, articles)
+                if unsupported:
+                    blocking = blocking + [f"The analysis states things its source articles do not support: {unsupported}. "
+                                           "Use only figures and quotations that appear in the summaries and articles."]
                 if not blocking:
                     text = candidate
                     break
@@ -1591,20 +1728,68 @@ class Conductor:
         except Exception:  # noqa: BLE001 - the index page is a convenience
             return []
 
+    def _carrier_overdue(self, partner_id: str, grace_minutes: int = 60) -> bool:
+        """The carrying edition's own deadline (plus a grace period) has passed on this date and it never delivered."""
+        partner = merge_settings(edition_core.load_edition(partner_id))
+        spec = partner.get("deadline_local")
+        if not spec:
+            return False
+        hour, minute = (int(x) for x in str(spec).split(":"))
+        day = datetime.strptime(self.date, "%Y-%m-%d")
+        deadline = datetime(day.year, day.month, day.day, hour, minute, tzinfo=resolve_timezone(partner["timezone"]))
+        return self.now() > deadline + timedelta(minutes=grace_minutes)
+
     def _shipped_without_me(self, partner_id: str) -> bool:
-        """True when ``partner_id`` (the edition that carries this one) already went out without this edition's section."""
+        """True when the edition that carries this one (``partner_id``) went out without this edition's section, or never went out
+        at all and is past its deadline: either way nobody will receive this edition unless it sends itself."""
         root, stem = self.edition_layout(partner_id)
         state = load_json(root / "generated" / f"{stem}-{self.date}-conductor.json", {}) or {}
         marker = load_json(root / "generated" / f"{stem}-{self.date}-combined.json", {}) or {}
-        return bool(state.get("delivered")) and marker.get("included") is False
+        if state.get("delivered"):
+            return marker.get("included") is False
+        return self._carrier_overdue(partner_id)
 
-    # ---- stage: deliver ----------------------------------------------------------------
+    def _release_due(self) -> bool:
+        carrier = self.edition.get("conductor.delivery.held_for")
+        return bool(carrier) and self._shipped_without_me(str(carrier))
+
+    def quality_metrics(self, articles: list[dict[str, Any]]) -> dict[str, Any]:
+        """One comparable record per day: validators reward form, so drift toward thin, unverified or boilerplate output has to be
+        visible as a trend (quality-history.jsonl beside the run state)."""
+        metas = [a.get("meta") or {} for a in articles]
+        prov = [m.get("provenance") or {} for m in metas]
+        words = [int(m.get("words") or 0) for m in metas]
+        total = lambda key: sum(int(p.get(key) or 0) for p in prov)  # noqa: E731
+        return {
+            "date": self.date, "edition": self.edition.edition_id, "articles": len(articles), "words_total": sum(words),
+            "words_mean": round(sum(words) / len(words)) if words else 0, "words_min": min(words) if words else 0,
+            "numbers_checked": total("numbers_checked"), "numbers_unmatched": sum(len(p.get("unmatched_numbers") or []) for p in prov),
+            "quotes_checked": total("quotes_checked"), "quotes_unmatched": sum(len(p.get("unmatched_quotes") or []) for p in prov),
+            "quotes_summary_only": total("summary_only_quotes"), "quotes_translated": total("translated_quotes"),
+            "articles_flagged": sum(1 for m in metas if m.get("flags")), "attempts_total": sum(int(m.get("attempts") or 0) for m in metas),
+            "cost_usd": round(float(self.state.state.get("spent_usd", 0.0)), 2), "output_tokens": int(self.state.state.get("output_tokens", 0)),
+            "notes": len(self.state.state.get("delivery_notes") or []),
+        }
+
+    def _write_quality_metrics(self, articles: list[dict[str, Any]]) -> None:
+        try:
+            path = Path(self.ctx.conductor_state_path(self.date)).parent / "quality-history.jsonl"
+            record = self.quality_metrics(articles)
+            lines = [line for line in (path.read_text(encoding="utf-8").splitlines() if path.exists() else [])
+                     if line.strip() and not (f'"date": "{self.date}"' in line and f'"edition": "{self.edition.edition_id}"' in line)]
+            lines.append(json.dumps(record, ensure_ascii=False))
+            atomic_write(path, "\n".join(lines[-400:]) + "\n")
+        except Exception as exc:  # noqa: BLE001 - a metrics file must never fail a briefing
+            self.log(f"quality metrics not written: {exc!r}")
+
+    # ---- stage: deliver ------------------------------------------------------------
     def stage_deliver(self, articles: list[dict[str, Any]], notes: list[str], degraded: bool = False,
                       combined: dict[str, Any] | None = None) -> bool:
         import article_tools_core as tools
         import run_reporting
 
         summaries = [tools.article_summary(a["path"].read_text(encoding="utf-8"), a["story"]) for a in articles]
+        self._write_quality_metrics(articles)
         flagged = [a["story"]["story_id"] for a in articles if (a["meta"].get("flags"))]
         if flagged:
             notes.append(f"figures not fully verified against fetched sources in: {', '.join(flagged)}")
@@ -1627,9 +1812,14 @@ class Conductor:
             atomic_write(combined_html, body_html)
             text_path, html_path = combined_text, combined_html
         self.state.state["delivery_notes"] = notes
+        undelivered_marker = Path(self.paths.pdf_path(self.date)).with_suffix(".undelivered")
         if self.dry_run or not self.deliver_enabled:
             self.log("delivery skipped (dry run)")
             self.state.mark("deliver", "done", skipped=True)
+            try:  # a day nobody received must not make its stories count as "already covered" for the next two days
+                undelivered_marker.write_text(f"not delivered (dry run or delivery disabled) at {datetime.now(timezone.utc).isoformat()}\n", encoding="utf-8")
+            except OSError:
+                pass
             return True
         carrier = self.edition.get("conductor.delivery.held_for")
         if self.edition.get("conductor.delivery.standalone") is False and os.environ.get("BRIEFING_FORCE_STANDALONE") != "1":
@@ -1645,7 +1835,7 @@ class Conductor:
                     self.log(f"run report update failed: {exc!r}")
                 self.log(f"held {len(articles)} articles for the {carrier or 'combined'} briefing (no stand-alone email)")
                 return True
-            notes.append(f"the {carrier} briefing went out without this section, so it is sent on its own (late)")
+            notes.append(f"the {carrier} briefing went out without this section (or never went out), so this edition is sent on its own (late)")
             subject_suffix = " (late)"
         command_json = os.environ.get("BRIEFING_DELIVER_COMMAND")
         command = json.loads(command_json) if command_json else self.edition.get("conductor.delivery.command")
@@ -1680,12 +1870,17 @@ class Conductor:
             self.log(f"deliver attempt {attempt}: exit={code}")
             if code == 0 and "Email sent" in output:
                 break
+            if "stage-order gate" in output or "Delivery blocked" in output:
+                reason = next((line.strip() for line in output.splitlines() if "Delivery blocked" in line or "stage-order gate" in line), "blocked")
+                run_reporting.update_run_report(self.date, run_status="failed", delivery_status="blocked")
+                raise StageFailed("deliver", f"the delivery gate refused to send: {reason[:240]}")  # retrying cannot change its answer
             self.sleep(30 * attempt)
         else:
             run_reporting.update_run_report(self.date, run_status="failed", delivery_status="failed")
             raise StageFailed("deliver", f"delivery command failed: {output[-300:]}")
         self.state.state["delivered"] = {"at": datetime.now(timezone.utc).isoformat(), "articles": len(articles), "notes": notes}
         self.state.mark("deliver", "done")
+        undelivered_marker.unlink(missing_ok=True)
         try:
             run_reporting.update_run_report(self.date, run_status="degraded" if degraded else "completed", delivery_status="sent")
         except Exception as exc:  # noqa: BLE001

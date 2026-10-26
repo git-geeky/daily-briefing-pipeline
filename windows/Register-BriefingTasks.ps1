@@ -77,5 +77,10 @@ function New-BriefingTask([string]$Name, [string]$Arguments, [string]$At, [int]$
     }
 }
 
-New-BriefingTask -Name "Briefing-$Edition" -Arguments "-Edition $Edition" -At $StartAt -LimitHours 4 -Repeat
-New-BriefingTask -Name "Briefing-$Edition-Watchdog" -Arguments "-Edition $Edition -Finish" -At $WatchdogAt -LimitHours 1
+New-BriefingTask -Name "Briefing-$Edition" -Arguments "-Edition $Edition -Scheduled" -At $StartAt -LimitHours 4 -Repeat
+New-BriefingTask -Name "Briefing-$Edition-Watchdog" -Arguments "-Edition $Edition -Finish -Scheduled" -At $WatchdogAt -LimitHours 1
+if ($Edition -eq 'animal') {
+    # The animal edition rides inside the daily briefing. If the daily briefing failed or never ran, the held animal edition would be
+    # lost; this release task re-checks after the daily deadline and sends it on its own (late) when the daily briefing did not carry it.
+    New-BriefingTask -Name "Briefing-animal-Release" -Arguments "-Edition animal -Finish -Scheduled" -At '18:00' -LimitHours 1
+}

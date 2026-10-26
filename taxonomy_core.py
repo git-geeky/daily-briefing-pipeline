@@ -15,6 +15,7 @@ GBIF's IUCN data can lag a very recent Red List release, so a mismatch is a prom
 """
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -41,6 +42,7 @@ class NameFacts:
     status: str | None = None           # ACCEPTED | SYNONYM | DOUBTFUL
     rank: str | None = None
     usage_key: int | None = None
+    confidence: int | None = None       # GBIF's own 0-100 confidence in the match
     iucn_code: str | None = None
     iucn_name: str | None = None
     iucn_url: str | None = None
@@ -99,6 +101,10 @@ def lookup_name(name: str, fetcher: JsonFetcher, *, with_iucn: bool = True) -> N
     facts.status = match.get("status")
     facts.rank = match.get("rank")
     facts.usage_key = match.get("usageKey")
+    try:
+        facts.confidence = int(match["confidence"]) if match.get("confidence") is not None else None
+    except (TypeError, ValueError):
+        facts.confidence = None
     if with_iucn and facts.in_backbone and facts.usage_key:
         key = match.get("acceptedUsageKey") or facts.usage_key
         url = f"{GBIF}/species/{key}/iucnRedListCategory"
@@ -181,6 +187,17 @@ def _table_status_by_name(markdown: str) -> dict[str, str]:
     return out
 
 
+def plausible_typo(given: str, facts: NameFacts) -> bool:
+    """A FUZZY match is a correction only when the two names are nearly the same string and GBIF is confident. A newly described
+    species is often fuzzily matched to a congener; telling the writer its (correct) new name "is not a valid name" would
+    replace it with the wrong animal."""
+    if not facts.canonical:
+        return False
+    if facts.confidence is not None and facts.confidence < 90:
+        return False
+    return difflib.SequenceMatcher(None, given.lower(), facts.canonical.lower()).ratio() >= 0.9
+
+
 def check_article_taxonomy(markdown: str, fetcher: JsonFetcher, *, cache: dict[str, NameFacts] | None = None) -> TaxonomyReport:
     report = TaxonomyReport()
     names = extract_binomials(markdown)
@@ -190,7 +207,10 @@ def check_article_taxonomy(markdown: str, fetcher: JsonFetcher, *, cache: dict[s
         if facts.error:
             report.lookup_errors.append(f"{name}: {facts.error}")
         elif facts.match == "FUZZY" and facts.canonical and facts.canonical != name:
-            report.misspellings[name] = facts.canonical
+            if plausible_typo(name, facts):
+                report.misspellings[name] = facts.canonical
+            else:
+                report.not_in_backbone.append(name)  # resembles another species: new or unlisted, not an error to "correct"
         elif not facts.in_backbone:
             report.not_in_backbone.append(name)
         else:

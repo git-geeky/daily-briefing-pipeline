@@ -36,6 +36,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import smtplib
 import socket
 import ssl
@@ -76,6 +77,11 @@ def human_date(iso_date: str) -> str:
     return dt.strftime("%A, %B %-d, %Y") if sys.platform != "win32" else dt.strftime("%A, %B %#d, %Y")
 
 
+def clean_header(value: str | None) -> str:
+    """A header value is one line: control characters (a CR/LF would start a new header, e.g. a hidden Bcc) become spaces."""
+    return " ".join(re.sub(r"[\x00-\x1f\x7f\u2028\u2029]+", " ", str(value or "")).split())
+
+
 def parse_recipients(value: str | Iterable[str] | None) -> list[str]:
     """Normalise ``a@x.com, b@y.com`` (or a list) into a de-duplicated list of addresses."""
     if value is None:
@@ -84,7 +90,7 @@ def parse_recipients(value: str | Iterable[str] | None) -> list[str]:
     seen: dict[str, None] = {}
     for item in raw:
         address = item.strip()
-        if address and "@" in address:
+        if address and "@" in address and not re.search(r"[\s\x00-\x1f<>,;\"]", address):  # a bare address: no name part, no header tricks
             seen.setdefault(address, None)
     return list(seen)
 
@@ -268,7 +274,7 @@ def send_briefing_email(
     msg = MIMEMultipart("mixed")
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
-    msg["Subject"] = subject
+    msg["Subject"] = clean_header(subject)
     msg["Date"] = formatdate(localtime=False)
     if body_html:
         alternative = MIMEMultipart("alternative")
@@ -281,7 +287,7 @@ def send_briefing_email(
     part = MIMEBase("application", "pdf")
     part.set_payload(pdf_bytes)
     encoders.encode_base64(part)
-    part.add_header("Content-Disposition", "attachment", filename=pdf_path.name)
+    part.add_header("Content-Disposition", "attachment", filename=clean_header(pdf_path.name))
     msg.attach(part)
 
     _smtp_send(
@@ -333,7 +339,7 @@ def send_plaintext_email(
     msg = MIMEMultipart("mixed")
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
-    msg["Subject"] = subject
+    msg["Subject"] = clean_header(subject)
     msg["Date"] = formatdate(localtime=False)
     msg.attach(MIMEText(body, "plain", "utf-8"))
 

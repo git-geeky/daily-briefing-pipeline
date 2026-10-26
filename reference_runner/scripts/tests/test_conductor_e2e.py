@@ -45,12 +45,15 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertEqual(args[args.index("--edition") + 1], "animal")
         self.assertEqual(args[args.index("--recipient") + 1], "a@example.com,b@example.com")
         text = result["assembled_text"]
-        self.assertIn("Photo: Jane Doe, CC BY-SA 4.0, via Wikimedia Commons", text)
+        self.assertIn("Photo: Jane Doe, CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/), via Wikimedia Commons", text)
         self.assertNotIn("<!-- story:", text)
         self.assertEqual(text.count("Image Quality Failure"), 0)
         # Token/cost accounting reached the run report for every model call, even with parallel writers.
         self.assertEqual(result["accounting_errors"], [])
         self.assertEqual(result["report_run_status"], "completed")
+        self.assertIn(result["visual_qa_status"], {"passed", "warning"},
+                      "the one-image contract belongs to the daily edition: twenty photographs must not fail this edition's visual QA")
+        self.assertEqual(result["gate"], [True, None], "the delivery gate must agree with the conductor that this run may ship")
         self.assertEqual(result["usage_calls"], sum(result["calls"].values()))
         self.assertAlmostEqual(result["usage_cost"], result["spent"], places=2)
         for stage in ("audit", "ingest", "slate", "photos", "articles", "header", "validate", "pdf", "visual_qa", "deliver"):
@@ -213,6 +216,27 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertEqual(result["report_run_status"], "completed")
         self.assertEqual(result["email_files"], ["claude-animal-briefing-2026-10-26-email.html", "claude-animal-briefing-2026-10-26-email.txt"],
                          "the bodies stay on disk for the daily briefing to carry")
+
+    def test_a_held_briefing_is_released_when_the_carrier_never_went_out_and_is_past_its_deadline(self) -> None:
+        root = self.fresh()
+        first = run_harness("release_held", root)
+        self.assertIsNone(first["deliver_args"])
+        self.assertIn("held", first["delivered_info"])
+        second = run_harness("release_held", root, "--second-pass", "--finish")
+        self.assertEqual(second["exit"], 10, second["events"])  # finish mode reports "shipped what existed"
+        args = second["deliver_args"]
+        self.assertIsNotNone(args, second["events"])
+        self.assertTrue(args[args.index("--subject") + 1].endswith("(late)"), args)
+        self.assertNotIn("held", second["delivered_info"])
+
+    def test_a_story_whose_call_keeps_failing_is_retried_once_then_given_up_on(self) -> None:
+        root = self.fresh()
+        first = run_harness("call_error", root)
+        second = run_harness("call_error", root, "--second-pass")
+        self.assertIn("fixture-story-2", first["article_story_ids"])
+        self.assertIn("fixture-story-2", second["article_story_ids"], "one retry on the next pass is allowed")
+        third = run_harness("call_error", root, "--second-pass")
+        self.assertNotIn("fixture-story-2", third["article_story_ids"], "after two failed passes it is terminal and never bought again")
 
     def test_if_the_daily_briefing_went_out_without_it_the_animal_briefing_sends_itself_late(self) -> None:
         result = run_harness("late_standalone", self.fresh())

@@ -38,11 +38,21 @@ Guarantees worth knowing:
 
 * **Never silent.** Disabled, deferred past the deadline, needs-a-human (login, org limit, spend limit) and hard failures all write `generated\alerts\ALERT-*.txt` and, when `BRIEFING_ALERT_COMMAND` is set, email it. The watchdog task raises an alert if there is nothing to ship.
 * **Honest depth.** Articles aim for 3,500 words (animal) only when distinct material exists; the three-band floors block below 1,500. A story that cannot honestly reach the floor is replaced from the backup list, never padded.
-* **Provenance gate.** Numbers, quotations, DOIs and URLs in each article are checked against what the writer actually fetched. Invented quotations and non-resolving DOIs trigger a targeted repair; if they survive, the story is replaced.
+* **Provenance gate.** Numbers, quotations, DOIs and URLs in each article are checked against what the writer actually saw (`provenance_core.py`; best-effort, see below). Invented quotations and non-resolving DOIs trigger a targeted repair; if they survive, the story is replaced. How strict it is:
+  * *Evidence excludes the writer's own words.* The `Web search results for query: "..."` line and the `prompt:` a redirect notice hands back are stripped from tool results (`llm_backend_core.strip_tool_echo`), so searching for an invented quotation cannot make it "verify".
+  * *Quotations are verified against page text the script fetched* (the dossier). A quotation found only in a `WebFetch` **answer** (a small model's summary of a page) is reported as `summary_only`; one is tolerated and noted, three trigger a repair.
+  * *Figures must match as the same kind of figure*: "2.5 billion" is not supported by "2.5 million", "37%" is not supported by "page 37" (scales and percent words are understood in English, Dutch, German, French, Spanish, Portuguese and Italian). A short article of invented figures (three or more, more than half of those checked) needs repair; the reader is told (editor's note "figures not fully verified") when three or more figures, a fifth of them, or any summary-only quotation remain unverified.
+  * *Translations*: a quotation labelled as the writer's translation is exempt only when the original wording is quoted beside it and found in the evidence (at most three per article). Quotations in `"..."`, `“...”`, `«...»`, `„...“`, `「...」` and `'...'` are all checked; ellipsis pieces must occur in order.
+  * *DOIs* are checked wherever they appear in the article (existence in Crossref; title comparison for Primary Sources entries). The header and the closing analysis are checked against the day's articles (an invented quotation, or figures found in no article, rejects the header or sends the closing back for a rewrite).
+  * *Not a fact-checker.* It proves a figure or quotation appears in something the writer was given; it does not prove the source is right, that a figure is attributed to the right subject, or that nothing was omitted.
 * **Degrade, don't die.** With at least the minimum number of articles (animal 6, daily 12) the run ships a smaller briefing and says so in the email; sections below their minimum carry a visible `Quality Failure` block.
 * **Idempotent delivery.** `deliver_core.py` writes one receipt per runner, edition and date (not per PDF hash: a resumed run rebuilds the PDF and its bytes differ), so a repetition-trigger retry, or a resume after an ambiguous send, never double-sends. `--force` re-sends deliberately.
 * **Paid work survives.** A drafted article is saved before its repair rounds, so a limit or crash during repair resumes into the repair, not back to a fresh draft. A story that failed its checks after full repair is marked terminal and not bought again on resume.
 * **A crash is an alert.** Any unexpected exception in the conductor, and any failure of the launcher itself, writes an alert file (and emails it when the alert command works) and still tries to ship what exists.
+* **Outbound fetches stay on the public internet.** Every `requests` session that follows a URL chosen by a model or a web page (dossier, photos, image downloads, citation checks, PDF images) goes through `net_safety_core.py`: http(s) only, no credentials, every resolved address must be globally routable (loopback, RFC1918, link-local and metadata addresses are refused, including on each redirect hop), and the decoded body is capped (a gzip bomb cannot exhaust memory). Images are refused above 60 megapixels. A writer whose tool calls reach a non-public address has its tool results discarded, the article flagged and an alert raised (`unsafe-fetch`). Residual risk: DNS rebinding within seconds of the check; the model CLI's own `WebFetch` runs inside the CLI and is not covered beyond this after-the-fact check.
+* **Fetched text is data.** Page text is placed between `<source>` fences in the prompt with every tag-like `<` neutralised, hidden elements (`display:none`, `aria-hidden`, zero font size) are dropped before the text is shown or counted as evidence, and lines that read as instructions to an AI (several languages, also when split over two lines) are removed. The removal is a best-effort filter, **not the control**: the prompts say fetched content is never instructions, the model CLI runs with `--safe-mode`, only `WebFetch` and `WebSearch`, and the environment handed to it excludes the pipeline's own settings (`BRIEFING_*`, recipients, SMTP and unrelated credentials).
+* **Cost caps do not trust one field.** A run stops at `max_cost_usd_per_run` and also at `max_output_tokens_per_run` (1.5 million), which does not depend on the cost the CLI reports; a reported cost of zero beside real token counts is priced from the tokens. If the CLI stops reporting five-hour/seven-day utilisation the run continues under those caps and raises the alert `telemetry-missing` (the 80/90/92% guards cannot see anything then).
+* **Quality is a trend, not a gate.** `quality-history.jsonl` (next to the run state, one line per day and edition) records articles, words, figures and quotations checked and unmatched, summary-only quotations, flagged articles, repair attempts and cost. The validators reward form; read this file weekly for drift (shrinking words, rising unmatched or summary-only counts, more repair rounds).
 
 ## 3. Where things live
 
@@ -52,9 +62,10 @@ Guarantees worth knowing:
 | Writer/editor prompts | `prompts/<edition>/*.md` |
 | Editorial contract | `references/animal-briefing-spec.md`; daily uses `briefing-spec.md` + `generation-spec.md` |
 | Source catalogs | `references/sources.md`; `references/animal-sources.md` (390 sources, 37 languages) + `.meta.json` |
-| Engine | `conductor_core.py`, `llm_backend_core.py`, `slate_core.py`, `photo_core.py`, `provenance_core.py`, `article_tools_core.py` |
+| Engine | `conductor_core.py`, `llm_backend_core.py`, `slate_core.py`, `photo_core.py`, `provenance_core.py`, `article_tools_core.py`, `dossier_core.py`, `taxonomy_core.py`, `pdf_merge_core.py`, `net_safety_core.py` |
 | Run state, log, usage | `<root>\generated\*-conductor.json`, `*-conductor.log`, `*-run.json` (`usage` rollup by stage and model) |
-| Alerts | `<root>\generated\alerts\` |
+| Alerts | `<root>\generated\alerts\` (files older than 30 days are pruned) |
+| Quality trend | `<root>\generated\quality-history.jsonl` |
 | Windows entry points | `windows\*.ps1` |
 
 `<root>` is `Documents\Daily-Briefings` (daily) and `Documents\Daily-Briefings\animal` (animal).
@@ -91,6 +102,7 @@ None of the Windows or aiserver steps could be executed from the cloud session t
    | animal | 06:30 | every 30 min until 11:30 | 11:30 | 11:45 |
    | daily | 12:30 | every 30 min until 17:30 | 17:30 | 17:45 |
 
+   A third animal task, `Briefing-animal-Release` (18:00, `-Finish`), sends the animal briefing on its own, marked "(late)", if the daily briefing has shipped without it or is overdue; without it a combined-briefing failure would leave the animal briefing unsent. Every scheduled task passes `-Scheduled`: the launcher refuses a start outside the edition's window (animal 06:00-12:30, daily 12:00-18:30) and writes the alert `missed-window` instead, so a machine that was off at 06:30 and wakes at 20:00 does not start a briefing for the wrong hour.
    The animal task produces its PDF but does not email it; the 12:30 daily task sends the combined briefing. The editions are staggered so they never share one five-hour usage window. Keep each watchdog after its edition's `conductor.deadline_local`. Tasks are registered **disabled** unless `-Enable` is given, and even when enabled the first run is **tomorrow's** occurrence: the registration pins each trigger's start boundary to tomorrow. Pass `-AllowToday` only if you want today's occurrence; it is never the default. Nothing runs until you enable the tasks.
 7. **Retire duplicates.** The legacy `\ClaudeCode\Claude-DailyBriefing` task is already disabled; leave it. `briefing-runner-flags.json` currently has `use_codex_for_scheduled_tasks: true`: decide whether the Codex runner should keep sending a second daily briefing. The flags file only gates the legacy launchers, not the conductor.
 
@@ -111,6 +123,7 @@ To rerun a day from scratch, delete that day's `*-conductor.json` and the `*-art
 
 * The conductor reads five-hour and seven-day utilisation from the CLI's own `rate_limit_event`. Defaults (edit `conductor.budget` in the edition file): defer a run that *starts* above 80% (five-hour) or 90% (seven-day); stop launching new articles above 92%; cap a run at `max_cost_usd_per_run` and an article at `max_cost_usd_per_article` (API-equivalent dollars; your plan is not billed per token, but the figure is a good relative meter).
 * A limit with at least the minimum number of finished articles ships a partial briefing unless the reset is within 90 minutes, in which case the run waits and completes.
+* A story whose model call fails without a verdict is retried once on the next repetition and then marked terminal (a story is never bought more than twice across repetitions). Alerts are keyed by stage and reason, so one failing stage does not hide a different one later the same day.
 * To spend less: lower `article_sections` targets or `max_parallel_articles`. The defaults are Sonnet for everything but the slate, with the review off; to spend less, move `slate` to `sonnet`; to spend more on quality, move `header` or `closing` to `opus` in `conductor.models`, or set `review_enabled: true` (Fable review, Opus fallback). `conductor.dossier.enabled: false` returns the writer to fetching its own sources.
 
 ### Measured cost and time (one live sample each, extrapolated; treat as an estimate)
@@ -147,7 +160,7 @@ Extrapolation for a full animal run (measured before the Sonnet defaults; the sl
 
 ## 6. What was and was not verified
 
-**Verified in the build environment** (cloud Linux, real `claude` CLI, real network, no email sent, no Windows desktop, no aiserver): 357 automated tests, including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; and **four full live runs** (two per edition) on 2026-10-26:
+**Verified in the build environment** (cloud Linux, real `claude` CLI, real network, no email sent, no Windows desktop, no aiserver): 431 automated tests in the reference runner (67 skipped by design) and 4 in the shared-core suite, including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; and **four full live runs** (two per edition) on 2026-10-26:
 
 | Run | What happened | Cost (API-equivalent) |
 |---|---|---|
@@ -162,6 +175,30 @@ Findings that shape expectations:
 * The cloud sandbox is a datacenter IP: many publishers (bioRxiv, gcrmn.net, several news sites) refuse its fetches, and the daily source audit reported 238 of 363 sources unavailable. Several animal articles therefore say a paper's full text "was not read". Run from your desktop (`WebFetch` runs on the machine that runs the CLI) the fetch success rate should be higher; this is not verified.
 * Articles run 1,300 to 2,700 words, below the 3,500-word aim, because the writer stops when the material it could open runs out. A depth guide and a wider dossier budget are in place; reaching 3,500 depends on source access.
 * The per-section catalog-source minimum cannot be satisfied by a writer who cannot see the catalog. It is advisory (a warning and an editor's note) in the conductor flow for both editions; the legacy validators keep it as a hard gate.
+
+### Independent adversarial reviews (three, 2026-10-26)
+
+Three reviewers with no stake in the design attacked the finished pipeline: operations over time (restarts, reboots, limits, Windows behaviour), security / privacy / cost control, and content integrity. Every claim below was reproduced by the reviewer or by the fix's test.
+
+| Area | Found | Status |
+|---|---|---|
+| Delivery gate | A second pass through the last mile wiped `source_audit` from the run report, after which the Windows delivery gate refused every send for the rest of the day (critical). An incomplete audit also made the gate refuse after the conductor had already spent the run | Fixed: the audit is carried through re-entry; an incomplete audit becomes an explicit waiver the gate honours; covered by subprocess tests of the real report code. **The PowerShell side is still untested on Windows** |
+| Visual QA | A one-image-per-briefing contract blocked the animal edition (an image per article) whenever it was forced to send itself | Fixed (per-article contract) |
+| Restarts | A lock written before a reboot could be honoured because its PID was reused; failing stages hid each other's alerts; one story could be bought on every repetition; atomic writes raised on Windows when a reader held the file; held briefings had no release path | Fixed (boot-aware lock, alerts keyed by stage and reason, two failed passes make a story terminal, retried writes, release task) |
+| SSRF and size | Every fetcher followed redirects into loopback/LAN and read unbounded bodies | Fixed (`net_safety_core.py`), plus a static screen of the slate's URLs; DNS rebinding is the stated residual |
+| Evidence integrity | The writer's own search query and fetch prompt were counted as evidence; any "(translation)" label exempted a quotation; "2.5 billion" matched "2.5 million"; seven invented figures in a seven-figure article needed no repair; body DOIs, single-quoted and guillemet quotations were never checked; the header and closing were unchecked | Fixed (see Provenance gate) |
+| Prompt injection | The scrub was a short English blacklist; hidden page text counted as evidence; a page could forge a `<source>` fence | Hardened, and documented as best-effort rather than the control |
+| Cost | A missing or reshaped limit telemetry made the 80/90/92% guards silent no-ops; a zero reported cost blinded the run cap | Fixed (alert, token cap, estimated cost) |
+| Content | A fuzzy GBIF match could "correct" a newly described species into its relative; photo captions lacked the licence link and a modification notice; ported licences lost their port; US-only public-domain tags were accepted; scheme-less links passed the body-link rule; the cruelty exclusion was English-only; prior-day memory counted days that were never sent | Fixed |
+| Hygiene | Header injection through `--subject`; unbounded dependency majors; no quality trend | Fixed (sanitised headers, bounded `requirements.txt` plus `requirements-tested.txt`, `quality-history.jsonl`) |
+
+**Raised and deliberately not changed (your decisions):**
+* *The daily editorial spec instructs the writer to identify anonymous or pseudonymous people ("likely [name]" from a few public attributes).* This is the daily briefing's own editorial section, not a bug, and it carries defamation and privacy risk for a multi-recipient newsletter. It is left as written.
+* *The daily edition's section briefs carry personal details about the owner (where they live and what they follow) in this public repository.* Moving them to the private overlay is a one-time edit that touches what the daily briefing covers, so it waits for you.
+* *The legacy source-audit fetcher (`adaptive_fetch_core.py`) spoofs a crawler user agent, impersonates a browser's TLS and routes blocked pages through a third-party reader.* It predates this work and affects only the audit. Not changed here.
+* *The daily ingest's tier and language scoring is inert* (only the animal catalog has metadata). The slate prompt describes flags the daily items do not carry. Harmless, but the daily slate is chosen with less signal than the prompt implies.
+
+**Still not done, and worth doing:** recorded real CLI stream fixtures per CLI version (the parser tests agree with themselves), Pester tests for the PowerShell gate, and a contract test that fails when the CLI's telemetry changes shape.
 
 **Not verified:** everything on the Windows desktop (PowerShell launchers, Task Scheduler registration, `Invoke-RemoteBash`/scp path), the aiserver deployment of the new `deliver_core.py`, delivery by email of any briefing (all live runs used `--no-deliver`), the Fable review (off by default), and the experimental Codex backend. Treat the first week as a burn-in: run with `-NoDeliver`, read the PDFs, and watch `-Diagnose`.
 

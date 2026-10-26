@@ -15,6 +15,7 @@ from briefing_paths import (
     fragment_manifest_path,
     fragment_path,
     image_cache_dir,
+    pdf_path,
     source_audit_path,
 )
 
@@ -144,6 +145,8 @@ BANNED_TOPIC_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
 # ("Crypto Subsystem", thin-film, ransomware-payment Bitcoin mentions) to be rewritten.
 # A hit now counts only when it is in the title, in the lede, or repeated, and it is
 # discarded when it sits inside a known technical/security context.
+# Same definition as article_tools_core.SCHEMELESS_URL_RE: a link without a scheme is still a body link.
+_SCHEMELESS_URL_RE = re.compile(r"(?i)(?<![\w@/.-])(?:www\.[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}(?:/[^\s)>\]]*)?|[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/[^\s)>\]]+)")
 BANNED_TOPIC_MIN_BODY_MENTIONS = 3
 BANNED_TOPIC_LEDE_CHARS = 600
 _I = re.IGNORECASE
@@ -719,7 +722,8 @@ def build_item_manifest(
     body_without_sources = body.replace(source_block, "")
     body_without_sources = IMAGE_RE.sub("", body_without_sources)
 
-    has_body_links = bool(re.search(r"https?://", strip_watch_block(body_without_sources)))
+    prose_for_links = strip_watch_block(body_without_sources)
+    has_body_links = bool(re.search(r"https?://", prose_for_links) or _SCHEMELESS_URL_RE.search(prose_for_links))
     banned_topics = find_banned_topics(title, body)
     editorial_boilerplate = detect_editorial_boilerplate(body)
     relative_time_mentions = RELATIVE_TIME_RE.findall(body)
@@ -868,6 +872,13 @@ PRIOR_ITEM_LIMIT_DAYS = 2  # merge up to this many *existing* prior days
 
 
 def _load_prior_day_items(prior_date: str) -> list[dict]:
+    # The conductor marks a day whose briefing was built but never sent (a -NoDeliver burn-in, a disabled delivery): its stories
+    # were not seen by the reader, so they must not suppress the same stories as "already covered" on the next days.
+    try:
+        if pdf_path(prior_date).with_suffix(".undelivered").exists():
+            return []
+    except Exception:  # noqa: BLE001 - the marker is an optimisation of novelty scoring, never a reason to fail
+        pass
     prior_manifest = assembled_manifest_path(prior_date)
     if prior_manifest.exists():
         try:

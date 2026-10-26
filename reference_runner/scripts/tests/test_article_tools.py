@@ -18,6 +18,56 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 STORY = {"story_id": "saiga-genome", "title": "Saiga genome reveals a bottleneck after the 2015 die-off", "prior_story_id": None}
 
 
+class SchemelessLinkTests(unittest.TestCase):
+    """Review T18: "no URLs in the body" must also catch links written without a scheme."""
+
+    def test_links_without_a_scheme_are_removed_from_the_body_but_not_from_the_source_blocks(self) -> None:
+        text = ("## T\n\nSee www.evil.example/login and evil.example/phish, also [click here](www.evil.example/x). Reported by nature.com on "
+                "3.5 million voles, e.g. in the north.\n\n### Primary Sources\n- Journal. www.journal.example/paper\n")
+        cleaned, removed = tools._strip_body_links(text)
+        self.assertEqual(removed, 3)
+        body = cleaned.split("### Primary Sources")[0]
+        self.assertNotIn("evil.example", body)
+        self.assertIn("click here", body)
+        self.assertIn("nature.com", body)
+        self.assertIn("www.journal.example/paper", cleaned)
+
+    def test_the_validator_sees_a_schemeless_body_link(self) -> None:
+        if str(SCRIPTS_DIR) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS_DIR))
+        import briefing_manifest as manifest
+
+        def has_links(body: str) -> bool:
+            item = manifest.build_item_manifest("animals", "2026-10-26", "T", body, prior_items=[], image_metadata={}, source_audit=None)
+            return bool(item["has_body_links"])
+
+        self.assertTrue(has_links("Log in at www.evil.example/login now to read the rest of this story.\n"))
+        self.assertTrue(has_links("Visit evil.example/phish for the data.\n"))
+        self.assertFalse(has_links("The report on nature.com said 3.5 million voles, e.g. in the north.\n"))
+
+
+class PriorMemoryTests(unittest.TestCase):
+    """Review F10: a day that was built but never sent must not make its stories count as already covered."""
+
+    def test_an_undelivered_day_is_skipped_and_the_next_existing_days_are_used(self) -> None:
+        from unittest import mock
+
+        if str(SCRIPTS_DIR) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS_DIR))
+        import briefing_manifest as manifest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for day, title in (("2026-10-25", "Wolves return to the island"), ("2026-10-24", "Otters in the estuary"), ("2026-10-23", "Voles in the meadow")):
+                (root / f"{day}.md").write_text(f"## {title}\n\nBody text.\n", encoding="utf-8")
+            (root / "2026-10-25.undelivered").write_text("not delivered", encoding="utf-8")
+            patched = {"assembled_markdown_path": lambda d: root / f"{d}.md", "assembled_manifest_path": lambda d: root / f"{d}.json",
+                       "pdf_path": lambda d: root / f"{d}.pdf"}
+            with mock.patch.dict(manifest.load_prior_items.__globals__, patched):
+                titles = [item["title"] for item in manifest.load_prior_items("2026-10-26")]
+        self.assertEqual(titles, ["Otters in the estuary", "Voles in the meadow"])
+
+
 class NormalizeTests(unittest.TestCase):
     def test_messy_output_is_repaired_without_touching_content(self) -> None:
         raw = fx.make_article(STORY, words=600, messy=True)

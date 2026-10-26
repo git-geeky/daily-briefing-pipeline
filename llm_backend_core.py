@@ -66,6 +66,12 @@ class RateLimitInfo:
     window: str | None = None
 
     @property
+    def has_utilization(self) -> bool:
+        """Both windows reported. False means the CLI sent no limit telemetry (or changed its shape): the utilisation guards then
+        see ``None`` and would silently never fire."""
+        return self.five_hour_utilization is not None and self.seven_day_utilization is not None
+
+    @property
     def max_utilization(self) -> float:
         values = [v for v in (self.five_hour_utilization, self.seven_day_utilization) if v is not None]
         return max(values) if values else 0.0
@@ -167,13 +173,16 @@ def parse_reset_time(text: str | None, *, now: datetime | None = None) -> float 
         hour = 0
     if hour > 23 or minute > 59:
         return None
-    tz = timezone.utc
+    base = now or datetime.now(timezone.utc)
+    tz = base.astimezone().tzinfo or timezone.utc  # a message without a zone prints the machine's own local time
     if tz_name and ZoneInfo is not None:
         try:
             tz = ZoneInfo(tz_name)
-        except Exception:  # noqa: BLE001 - unknown zone: assume UTC rather than guess wrongly
-            tz = timezone.utc
-    reference = (now or datetime.now(timezone.utc)).astimezone(tz)
+        except Exception:  # noqa: BLE001 - unknown zone: the machine's local time is the better guess than UTC
+            pass
+    elif tz_name and tz_name.upper() == "UTC":
+        tz = timezone.utc
+    reference = base.astimezone(tz)
     candidate = reference.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if candidate <= reference:
         candidate += timedelta(days=1)
@@ -211,6 +220,41 @@ def build_claude_command(request: LLMRequest, *, executable: str = "claude", saf
     return argv
 
 
+_SEARCH_ECHO_RE = re.compile(r"(?im)^\s*Web search results for query:.*$")
+_REDIRECT_PROMPT_RE = re.compile(r"(?is)(?:^|\n)\s*-?\s*prompt:\s*.*\Z")
+
+
+def strip_tool_echo(text: str) -> str:
+    """Remove the parts of a tool result that repeat what the *model itself* sent: the query line of a WebSearch result and the
+    ``prompt:`` the redirect notice of a WebFetch hands back. They are not evidence; left in the evidence corpus they let an
+    invented quotation or figure "verify" itself the moment the writer searches for it."""
+    text = _SEARCH_ECHO_RE.sub("", text or "")
+    if "REDIRECT DETECTED" in text:
+        text = _REDIRECT_PROMPT_RE.sub("", text)
+    return text.strip()
+
+
+# Variables a child ``claude`` process has no use for: the pipeline's own configuration (recipient lists, the delivery command and
+# its user paths) and anything that looks like a credential for something other than the model account itself.
+_SENSITIVE_ENV_RE = re.compile(r"(?i)(recipient|passw|secret|smtp|deliver|private[_-]?key|credential|session[_-]?cookie)")
+_TOKENISH_ENV_RE = re.compile(r"(?i)(token|api[_-]?key)")
+_MODEL_ACCOUNT_ENV = ("ANTHROPIC_", "CLAUDE_")
+
+
+def child_environment(environ: dict[str, str] | None = None, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment handed to the model CLI: everything it needs to run (PATH, profile and proxy settings, its own account
+    variables) minus the pipeline's private settings and unrelated credentials."""
+    kept: dict[str, str] = {}
+    for key, value in (os.environ if environ is None else environ).items():
+        if key.upper().startswith("BRIEFING_") or _SENSITIVE_ENV_RE.search(key):
+            continue
+        if _TOKENISH_ENV_RE.search(key) and not key.upper().startswith(_MODEL_ACCOUNT_ENV):
+            continue
+        kept[key] = value
+    kept.update(extra or {})
+    return kept
+
+
 def _tool_result_text(block: dict) -> str:
     content = block.get("content")
     if isinstance(content, str):
@@ -241,6 +285,7 @@ def parse_stream(lines: list[str], *, keep_corpus: bool = True) -> LLMResult:
     final_event: dict | None = None
     assistant_text: list[str] = []
     message_usage: dict[str, dict] = {}
+    tool_names: dict[str, str] = {}
     for raw in lines:
         raw = raw.strip()
         if not raw.startswith("{"):
@@ -272,6 +317,8 @@ def parse_stream(lines: list[str], *, keep_corpus: bool = True) -> LLMResult:
                 if block.get("type") == "text" and block.get("text"):
                     assistant_text.append(block["text"])
                 elif block.get("type") == "tool_use":
+                    if block.get("id"):
+                        tool_names[str(block["id"])] = str(block.get("name") or "")
                     url = (block.get("input") or {}).get("url")
                     if url:
                         result.fetched_urls.append(str(url))
@@ -280,7 +327,7 @@ def parse_stream(lines: list[str], *, keep_corpus: bool = True) -> LLMResult:
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "tool_result":
-                        text = _tool_result_text(block)
+                        text = strip_tool_echo(_tool_result_text(block))
                         if text:
                             result.tool_corpus.append(text)
         elif kind == "result":
@@ -304,6 +351,12 @@ def parse_stream(lines: list[str], *, keep_corpus: bool = True) -> LLMResult:
         result.ok = not final_event.get("is_error") and str(final_event.get("subtype") or "success") == "success"
         if not result.ok:
             result.error_detail = (text if isinstance(text, str) else "") or str(final_event.get("subtype") or "")
+        if result.cost_usd <= 0 and (result.input_tokens + result.output_tokens + result.cache_read_tokens + result.cache_creation_tokens) > 0:
+            # A reported cost of zero beside real token counts means the CLI's cost field is missing or changed: price the tokens
+            # ourselves, so the run budget cannot be blinded by a telemetry change.
+            result.cost_usd = estimate_cost_usd(result.model_used, input_tokens=result.input_tokens, output_tokens=result.output_tokens,
+                                                cache_read=result.cache_read_tokens, cache_creation=result.cache_creation_tokens)
+            result.cost_estimated = True
     else:
         result.text = "\n".join(assistant_text).strip()
         if message_usage:
@@ -346,7 +399,7 @@ class ClaudeBackend:
         argv = build_claude_command(request, executable=self.executable, safe_mode=self.safe_mode,
                                     skip_permissions=self.skip_permissions)
         started = self.clock()
-        env = {**os.environ, **(self.env or {})}
+        env = child_environment(extra=self.env)
         if request.cwd:
             try:  # a missing working directory raises FileNotFoundError from Popen, indistinguishable from a missing program
                 Path(request.cwd).mkdir(parents=True, exist_ok=True)
@@ -428,7 +481,8 @@ class ClaudeBackend:
             if result.error_kind == "error" and not collected:
                 result.error_detail = result.error_detail or f"no output (exit code {process.returncode})"
             if result.error_kind in {"usage_limit", "weekly_limit"}:
-                result.reset_hint = parse_reset_time(text_blob) or result.rate_limit.resets_at
+                # The structured timestamp is exact; the prose is a fallback (it carries no zone on some platforms).
+                result.reset_hint = result.rate_limit.resets_at or parse_reset_time(text_blob)
             elif result.error_kind in DEFER_KINDS:
                 result.reset_hint = result.rate_limit.resets_at
         return result
@@ -499,6 +553,7 @@ class FakeBackend:
 
 __all__ = [
     "Backend", "ClaudeBackend", "CodexBackend", "DEFER_KINDS", "FAILURE_KINDS", "FakeBackend", "HUMAN_ACTION_KINDS",
-    "LLMRequest", "LLMResult", "RETRYABLE_KINDS", "RateLimitInfo", "build_claude_command", "classify_failure",
+    "LLMRequest", "LLMResult", "RETRYABLE_KINDS", "RateLimitInfo", "build_claude_command", "child_environment", "classify_failure",
+    "strip_tool_echo",
     "parse_reset_time", "parse_stream",
 ]

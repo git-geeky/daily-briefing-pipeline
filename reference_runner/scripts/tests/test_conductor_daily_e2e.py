@@ -56,6 +56,14 @@ class DailyConductorTests(unittest.TestCase):
         self.assertEqual(result["accounting_errors"], [])
         self.assertEqual(result["usage_calls"], sum(result["calls"].values()))
 
+    def test_an_incomplete_source_audit_is_waived_and_said_so_instead_of_blocking_the_send(self) -> None:
+        result = run_daily("audit_incomplete", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertTrue(result["delivered"])
+        self.assertEqual(result["audit_waiver"], "systemic source-check failures")
+        self.assertEqual(result["gate"], [True, None])
+        self.assertTrue(any("source audit was incomplete" in n for n in result["notes"]), result["notes"])
+
     def test_a_hard_news_article_with_one_counterpoint_row_is_repaired_before_the_final_lint_can_fail_the_briefing(self) -> None:
         result = run_daily("single_counterpoint_row", self.fresh())
         self.assertEqual(result["exit"], 0, result["events"])

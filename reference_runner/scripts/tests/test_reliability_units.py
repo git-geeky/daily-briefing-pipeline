@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 
@@ -165,6 +168,235 @@ class RenderPromptTests(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:
             cc.render_prompt("{{A}} {{B}}", {"A": "x"})
         self.assertIn("B", str(caught.exception))
+
+
+RUN_REPORT_PROBE = r"""
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import run_reporting as rr
+D = "2026-10-26"
+rr.ensure_run_attempt(D)
+rr.update_run_report(D, source_audit={"status": "complete", "all_sources_checked": True},
+                     timings={"pdf_build": {"status": "passed"}, "visual_qa": {"status": "passed"}}, validation_status="passed")
+rr.set_step_timing(D, "source_audit", status="passed", started_at="2026-10-26T00:00:00", ended_at="2026-10-26T00:01:00")
+rr.update_run_report(D, run_status="completed")           # the first pass has finished ...
+rr.ensure_run_attempt(D)                                   # ... and a second assemble starts a new attempt
+report = rr.load_run_report(D)
+report["timings"]["pdf_build"] = {"status": "passed"}
+report["timings"]["visual_qa"] = {"status": "passed"}
+report["validation_status"] = "passed"
+rr.write_run_report(report)
+ok_with_audit = rr.stage_prerequisites_satisfied(rr.load_run_report(D), "delivery")
+# an incomplete audit blocks, unless the conductor recorded a waiver (which a later attempt must not lose)
+rr.update_run_report(D, source_audit={"status": "failed", "systemic_failure": True})
+blocked = rr.stage_prerequisites_satisfied(rr.load_run_report(D), "delivery")
+rr.update_run_report(D, delivery_audit_waiver="systemic source-check failures", run_status="completed")
+rr.ensure_run_attempt(D)
+again = rr.load_run_report(D)
+again["timings"].update({"pdf_build": {"status": "passed"}, "visual_qa": {"status": "passed"}}); again["validation_status"] = "passed"
+rr.write_run_report(again)
+waived = rr.stage_prerequisites_satisfied(rr.load_run_report(D), "delivery")
+print("RESULT " + json.dumps({"ok": list(ok_with_audit), "blocked": list(blocked), "waived": list(waived)}))
+"""
+
+
+class RunReportAttemptTests(unittest.TestCase):
+    """Live-run review finding: a second pass through the last mile reset the report and dropped the source audit, so the Windows
+    delivery gate refused every send for the rest of the day."""
+
+    def test_the_audit_and_its_waiver_survive_a_new_attempt_so_the_gate_still_opens(self) -> None:
+        scripts = str(Path(__file__).resolve().parents[1])
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "DAILY_BRIEFING_ROOT": tmp, "DAILY_BRIEFING_SHARED_ROOT": str(REPO_ROOT), "BRIEFING_EDITION": "daily"}
+            proc = subprocess.run([sys.executable, "-c", RUN_REPORT_PROBE, scripts], capture_output=True, text=True, env=env, cwd=scripts, timeout=120)
+        line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT ")), None)
+        self.assertIsNotNone(line, proc.stdout[-1500:] + proc.stderr[-1500:])
+        result = json.loads(line[len("RESULT "):])
+        self.assertEqual(result["ok"], [True, None], "audit must survive the second attempt")
+        self.assertFalse(result["blocked"][0])
+        self.assertEqual(result["waived"], [True, None], "a recorded waiver must survive too")
+
+
+class AlertDedupeTests(unittest.TestCase):
+    def conductor(self, sends: list[bool], command=("mail",)):
+        c = cc.Conductor.__new__(cc.Conductor)
+        c.date = "2026-10-26"
+        c.state = types.SimpleNamespace(state={"alerts_sent": []}, save=lambda: None)
+        c.log = lambda message: None
+        outcomes = iter(sends)
+        c.notifier = types.SimpleNamespace(command=list(command) if command else None, send=lambda subject, body, key: next(outcomes))
+        return c
+
+    def test_a_failed_email_leg_is_retried_by_the_next_event_and_a_sent_one_is_not_repeated(self) -> None:
+        c = self.conductor([False, True, True])
+        c._alert_once("fail-deliver-abc", "s", "b")
+        self.assertEqual(c.state.state["alerts_sent"], [])
+        c._alert_once("fail-deliver-abc", "s", "b")
+        self.assertEqual(len(c.state.state["alerts_sent"]), 1)
+        c._alert_once("fail-deliver-abc", "s", "b")  # already sent: the third outcome must not be consumed
+        self.assertEqual(len(c.state.state["alerts_sent"]), 1)
+
+    def test_without_an_alert_command_the_file_is_the_alert_and_it_is_recorded_once(self) -> None:
+        c = self.conductor([False], command=None)
+        c._alert_once("fail-x-1", "s", "b")
+        c._alert_once("fail-x-1", "s", "b")
+        self.assertEqual(len(c.state.state["alerts_sent"]), 1)
+
+    def test_distinct_reasons_are_distinct_alerts(self) -> None:
+        c = self.conductor([True, True])
+        c._alert_once("fail-finish-aaaaaa", "s", "b")
+        c._alert_once("fail-finish-bbbbbb", "s", "b")
+        self.assertEqual(len(c.state.state["alerts_sent"]), 2)
+
+
+class BudgetGuardTests(unittest.TestCase):
+    """Review COST-1: caps that do not depend on the CLI's own cost field, and a loud signal when limit telemetry disappears."""
+
+    def conductor(self, **state):
+        import threading
+
+        c = cc.Conductor.__new__(cc.Conductor)
+        c.settings = {"budget": {"max_cost_usd_per_run": 40.0, "max_output_tokens_per_run": 1_000_000, "stop_launching_above": 0.92,
+                                 "defer_if_five_hour_above": 0.8, "defer_if_seven_day_above": 0.9}, "timeouts": {"probe_s": 5},
+                      "models": {"classify": {"model": "haiku"}}}
+        c._stop = threading.Event()
+        c.last_rate_limit = backend.RateLimitInfo()
+        c.state = types.SimpleNamespace(state={"alerts_sent": [], "stages": {}, **state}, save=lambda: None, done=lambda name: False,
+                                        mark=lambda *a, **k: None)
+        c.log = lambda message: None
+        return c
+
+    def test_the_output_token_cap_stops_a_run_even_when_cost_reads_zero(self) -> None:
+        c = self.conductor(spent_usd=0.0, output_tokens=1_200_000)
+        with self.assertRaises(cc.Deferred) as caught:
+            c.check_budget()
+        self.assertEqual(caught.exception.kind, "budget")
+        self.assertTrue(c._stop.is_set())
+
+    def test_below_the_caps_the_run_continues(self) -> None:
+        self.conductor(spent_usd=3.0, output_tokens=200_000).check_budget()
+
+    def test_missing_utilisation_telemetry_raises_one_alert_and_the_run_continues(self) -> None:
+        c = self.conductor()
+        alerts = []
+        c._alert_once = lambda key, subject, body: alerts.append(key)
+        c.dry_run, c.generated_dir, c.edition = False, Path("."), types.SimpleNamespace(label="Daily")
+        c.past_stage_ttl = lambda stage, seconds: True
+        c._record = lambda *a, **k: None
+        c.backend = types.SimpleNamespace(name="claude", run=lambda request: backend.LLMResult(
+            ok=True, text="ok", rate_limit=backend.RateLimitInfo(status="allowed")))
+        c.stage_preflight()
+        self.assertEqual(alerts, ["telemetry-missing"])
+
+    def test_present_telemetry_raises_no_alert(self) -> None:
+        c = self.conductor()
+        alerts = []
+        c._alert_once = lambda key, subject, body: alerts.append(key)
+        c.dry_run, c.generated_dir, c.edition = False, Path("."), types.SimpleNamespace(label="Daily")
+        c.past_stage_ttl = lambda stage, seconds: True
+        c._record = lambda *a, **k: None
+        c.backend = types.SimpleNamespace(name="claude", run=lambda request: backend.LLMResult(
+            ok=True, text="ok", rate_limit=backend.RateLimitInfo(status="allowed", five_hour_utilization=0.1, seven_day_utilization=0.1)))
+        c.stage_preflight()
+        self.assertEqual(alerts, [])
+
+
+class SynthesisCheckTests(unittest.TestCase):
+    """Review T13: the header and the closing analysis may restate only what the day's articles say."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        path = Path(self.tmp.name) / "a.md"
+        path.write_text("## Wolves return\n\nThe survey counted 1,240 wolves across 14 sites. The agency said \"the recovery plan has met every "
+                        "interim target set for the decade\" at the hearing.\n", encoding="utf-8")
+        self.articles = [{"path": path, "story": {"story_id": "a"}}]
+        self.c = cc.Conductor.__new__(cc.Conductor)
+
+    def test_a_restatement_passes(self) -> None:
+        text = "Wolves are back: 1,240 counted across 14 sites. The agency said \"the recovery plan has met every interim target set for the decade\"."
+        self.assertEqual(self.c._synthesis_unsupported(text, self.articles), "")
+
+    def test_an_invented_quotation_is_reported(self) -> None:
+        text = 'The agency admitted "the whole recovery programme has been a costly and embarrassing failure from the start" yesterday.'
+        self.assertIn("quotation", self.c._synthesis_unsupported(text, self.articles))
+
+    def test_story_and_section_counts_are_not_claims(self) -> None:
+        self.assertEqual(self.c._synthesis_unsupported("Across 17 stories in 12 sections, 14 sources and 11 regions agree: 1,240 wolves.", self.articles), "")
+
+    def test_a_short_text_of_figures_found_in_no_article_is_reported(self) -> None:
+        text = "Populations rose 83% to 9,400 animals, with 31 new packs across 612 square kilometres."
+        self.assertIn("figures found in no article", self.c._synthesis_unsupported(text, self.articles))
+
+
+class QualityMetricsTests(unittest.TestCase):
+    def test_a_daily_record_is_written_once_per_day_and_edition(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            c = cc.Conductor.__new__(cc.Conductor)
+            c.date = "2026-10-26"
+            c.edition = types.SimpleNamespace(edition_id="animal")
+            c.ctx = types.SimpleNamespace(conductor_state_path=lambda date: str(Path(tmp) / "state" / f"{date}.json"))
+            c.state = types.SimpleNamespace(state={"spent_usd": 4.567, "output_tokens": 123456, "delivery_notes": ["n"]})
+            c.log = lambda message: None
+            articles = [{"meta": {"words": 1800, "attempts": 2, "flags": ["x"], "provenance": {
+                "numbers_checked": 10, "unmatched_numbers": [{"text": "1"}], "quotes_checked": 3, "unmatched_quotes": [], "summary_only_quotes": 1,
+                "translated_quotes": 0}}}, {"meta": {"words": 2200, "attempts": 1, "provenance": {"numbers_checked": 4}}}]
+            c._write_quality_metrics(articles)
+            c._write_quality_metrics(articles)
+            lines = (Path(tmp) / "state" / "quality-history.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        record = json.loads(lines[0])
+        self.assertEqual((record["articles"], record["words_mean"], record["words_min"], record["numbers_checked"], record["numbers_unmatched"],
+                          record["quotes_summary_only"], record["articles_flagged"], record["attempts_total"]), (2, 2000, 1800, 14, 1, 1, 1, 3))
+        self.assertEqual(record["cost_usd"], 4.57)
+
+
+class UnsafeFetchTests(unittest.TestCase):
+    """Review SEC-3/T10: a writer steered to a local address must not have what it read counted as evidence."""
+
+    def conductor(self):
+        c = cc.Conductor.__new__(cc.Conductor)
+        c.check_network = True
+        c.edition = types.SimpleNamespace(label="Animal")
+        c.log = lambda message: None
+        c.alerts = []
+        c._alert_once = lambda key, subject, body: c.alerts.append(key)
+        return c
+
+    def test_results_from_a_loopback_fetch_are_discarded_flagged_and_alerted(self) -> None:
+        c = self.conductor()
+        outcome = cc.ArticleOutcome("story-1", "failed")
+        result = backend.LLMResult(ok=True, text="x", tool_corpus=["secret router page: 83% of voles"], fetched_urls=["http://127.0.0.1:8080/admin"])
+        self.assertEqual(c._trusted_tool_corpus(result, outcome), [])
+        self.assertTrue(outcome.flags and "non-public" in outcome.flags[0])
+        self.assertEqual(c.alerts, ["unsafe-fetch"])
+
+    def test_public_addresses_and_unreachable_names_keep_their_evidence(self) -> None:
+        c = self.conductor()
+        outcome = cc.ArticleOutcome("story-1", "failed")
+        result = backend.LLMResult(ok=True, text="x", tool_corpus=["page text"], fetched_urls=["https://no-such-host.invalid/page"])
+        self.assertEqual(c._trusted_tool_corpus(result, outcome), ["page text"])
+        self.assertEqual((outcome.flags, c.alerts), ([], []))
+
+
+class LockRebootTests(unittest.TestCase):
+    def test_a_lock_written_before_a_reboot_is_dead_even_if_its_pid_now_belongs_to_another_process(self) -> None:
+        boot = cc.boot_epoch()
+        if boot is None:
+            self.skipTest("boot time unknown on this platform")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run.lock"
+            path.write_text(json.dumps({"pid": os.getpid(), "started_epoch": time.time() - 60, "boot_epoch": boot - 7200}), encoding="utf-8")
+            lock = cc.FileLock(path, 240, alive=lambda pid: True)  # the pid is "alive" (reused by something else)
+            self.assertTrue(lock.acquire())
+            self.assertIsNotNone(lock.reclaimed)
+
+    def test_a_lock_from_this_boot_with_a_live_pid_still_blocks(self) -> None:
+        boot = cc.boot_epoch()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "run.lock"
+            path.write_text(json.dumps({"pid": os.getpid(), "started_epoch": time.time() - 60, "boot_epoch": boot}), encoding="utf-8")
+            self.assertFalse(cc.FileLock(path, 240, alive=lambda pid: True).acquire())
 
 
 if __name__ == "__main__":

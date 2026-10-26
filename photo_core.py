@@ -35,6 +35,7 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 import edition_core  # noqa: E402
+import net_safety_core as net_safety  # noqa: E402
 
 DEFAULT_LICENSES = ("cc0", "pd", "cc-by", "cc-by-sa")
 PROVIDER_PRIORITY = {"wikimedia": 3.0, "inaturalist": 2.0, "openverse": 1.0}
@@ -94,8 +95,10 @@ class StoryPhotos:
 _REJECT_LICENSE_RE = re.compile(
     r"\b(?:nc|nd)\b|non[- ]?commercial|no[- ]?deriv|all rights reserved|fair use|unfree|gfdl only", re.IGNORECASE
 )
-_BY_SA_RE = re.compile(r"^(?:cc[ -])?by[ -]sa(?:[ -](\d\.\d))?(?![\w])")
-_BY_RE = re.compile(r"^(?:cc[ -])?by(?:[ -](\d\.\d))?(?![\w-])")
+_BY_SA_RE = re.compile(r"^(?:cc[ -])?by[ -]sa(?:[ -](\d\.\d)(?:[ -]([a-z]{2,3}))?)?(?![\w])")
+_BY_RE = re.compile(r"^(?:cc[ -])?by(?:[ -](\d\.\d)(?:[ -]([a-z]{2,3}))?)?(?![\w-])")
+# Public-domain tags that hold only in the United States ("PD-US-expired", "PD-US-1923") are not public domain where the reader is.
+_PD_US_ONLY_RE = re.compile(r"\bpd[- ]us(?![- ]?gov)")
 
 
 def normalize_license(raw: str | None, version: str | None = None) -> tuple[str | None, str | None]:
@@ -112,17 +115,28 @@ def normalize_license(raw: str | None, version: str | None = None) -> tuple[str 
         return None, None
     if lowered.startswith("cc0") or lowered in {"cc-zero", "zero"}:
         return "CC0 1.0", "cc0"
+    if _PD_US_ONLY_RE.search(lowered):
+        return None, None
     if lowered in {"pd", "pdm"} or lowered.startswith(("public domain", "pd-", "pd ")):
         return "Public domain", "pd"
-    match = _BY_SA_RE.match(lowered)
-    if match:
-        found = match.group(1) or version
-        return "CC BY-SA" + (f" {found}" if found else ""), "cc-by-sa"
-    match = _BY_RE.match(lowered)
-    if match:
-        found = match.group(1) or version
-        return "CC BY" + (f" {found}" if found else ""), "cc-by"
+    for pattern, name, family in ((_BY_SA_RE, "CC BY-SA", "cc-by-sa"), (_BY_RE, "CC BY", "cc-by")):
+        match = pattern.match(lowered)
+        if match:
+            found = match.group(1) or version
+            port = match.group(2) if match.group(1) else None  # the jurisdiction port is part of the licence's name
+            return name + (f" {found}" if found else "") + (f" {port.upper()}" if port else ""), family
     return None, None
+
+
+def license_url(label: str | None) -> str:
+    """The licence deed for an attribution line (CC BY / BY-SA ask that it be linked); empty when there is none to cite."""
+    match = re.match(r"^CC (BY(?:-SA)?) (\d\.\d)(?: ([A-Z]{2,3}))?$", label or "")
+    if match:
+        port = f"/{match.group(3).lower()}" if match.group(3) else ""
+        return f"https://creativecommons.org/licenses/{match.group(1).lower()}/{match.group(2)}{port}/"
+    if (label or "").startswith("CC0"):
+        return "https://creativecommons.org/publicdomain/zero/1.0/"
+    return ""
 
 
 def strip_html(value: str | None) -> str:
@@ -299,8 +313,10 @@ def make_caption(candidate: PhotoCandidate, template: str) -> str:
         candidate.provider, candidate.provider
     )
     creator = re.sub(r"[\[\]\r\n]+", " ", candidate.creator).strip() or "Unknown author"
+    deed = license_url(candidate.license)
     return template.format(
-        description=description, creator=creator, license=candidate.license, provider=provider, page_url=safe_url
+        description=description, creator=creator, license=candidate.license, provider=provider, page_url=safe_url,
+        license_url=deed, license_link=f"{candidate.license} ({deed})" if deed else candidate.license,
     )
 
 
@@ -436,12 +452,13 @@ class RequestsFetcher:
     MAX_RETRY_AFTER_SECONDS = 45.0
 
     def __init__(self, *, timeout: float = 40.0, retries: int = 3, sleep: Callable[[float], None] = time.sleep,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, max_bytes: int = net_safety.DEFAULT_MAX_BYTES):
         import requests
 
         self._requests = requests
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": USER_AGENT, "Accept-Language": "en"})
+        net_safety.mount_safe(self._session, max_bytes=max_bytes)  # public addresses only, every redirect hop, capped decoded body
         self.timeout, self.retries, self._sleep, self._clock = timeout, retries, sleep, clock
         self._last_request: dict[str, float] = {}
 
@@ -465,6 +482,8 @@ class RequestsFetcher:
                     continue
                 response.raise_for_status()
                 return response
+            except (net_safety.UnsafeUrl, net_safety.ResponseTooLarge) as exc:
+                raise RuntimeError(f"GET {url} refused: {exc}") from exc  # not a transient fault: never retried
             except self._requests.RequestException as exc:
                 last = exc
                 if attempt < self.retries:

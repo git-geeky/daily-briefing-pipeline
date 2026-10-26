@@ -158,7 +158,9 @@ def throttle(url: str) -> None:
 
 
 def make_session() -> requests.Session:
-    s = requests.Session()
+    import net_safety_core
+
+    s = net_safety_core.mount_safe(requests.Session(), max_bytes=30_000_000)  # public addresses only; capped bodies
     s.headers.update(
         {
             "User-Agent": USER_AGENT,
@@ -200,6 +202,9 @@ def download_image(sess: requests.Session, url: str, img_cache: Path) -> Path | 
         try:
             r = sess.get(url, timeout=25, allow_redirects=True)
         except requests.RequestException as e:
+            if type(e).__name__ in {"UnsafeUrl", "ResponseTooLarge"}:
+                print(f"  ! refused: {url[:80]}  ({e})")
+                return None
             print(f"  ! network error attempt {attempt + 1}: {url[:80]}  ({type(e).__name__}: {e})")
             time.sleep(2 ** (attempt + 1))
             continue
@@ -227,6 +232,12 @@ def download_image(sess: requests.Session, url: str, img_cache: Path) -> Path | 
         if ctype and "image" not in ctype and "octet-stream" not in ctype:
             print(f"  ! non-image Content-Type {ctype!r} for {url[:80]}")
             return None
+        if path.suffix.lower() != ".svg":
+            import net_safety_core
+
+            if not net_safety_core.image_pixels_ok(data):
+                print(f"  ! image dimensions too large (decompression-bomb guard): {url[:80]}")
+                return None
         path.write_bytes(data)
         return path
 

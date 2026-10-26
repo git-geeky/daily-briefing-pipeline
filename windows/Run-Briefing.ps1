@@ -29,6 +29,10 @@
     Real run that builds the PDF but sends nothing.
 .PARAMETER NoDeadline
     Ignore the edition's local deadline for this run (manual runs started late in the day would otherwise stop drafting at once).
+.PARAMETER Scheduled
+    Set by the scheduled tasks. Task Scheduler's catch-up (StartWhenAvailable) starts a missed run whenever the machine next wakes, which
+    could be the middle of the night or the next afternoon; a scheduled start outside the edition's window writes an alert and exits
+    without running (animal 06:00-12:30, daily 12:00-18:30 local time, 18:00-21:00 for the animal release task).
 .PARAMETER WhatIf
     Show the resolved command and environment without running anything (creates nothing).
 
@@ -46,6 +50,7 @@ param(
     [switch]$DryRun,
     [switch]$NoDeliver,
     [switch]$NoDeadline,
+    [switch]$Scheduled,
     [switch]$WhatIf
 )
 
@@ -90,6 +95,17 @@ function Send-LauncherAlert([string]$Key, [string]$Subject, [string]$Body) {
 try {
     foreach ($required in @($conductor, $scriptsDir)) {
         if (-not (Test-Path -LiteralPath $required)) { throw "Required path not found: $required (update pipeline-shared from the repository, or fix BRIEFING_SCRIPTS_DIR)" }
+    }
+    if ($Scheduled) {
+        $windows = @{ animal = @('06:00', '12:30'); daily = @('12:00', '18:30') }
+        if ($Edition -eq 'animal' -and $Finish -and (Get-Date).TimeOfDay -ge [TimeSpan]::Parse('17:50')) { $windows['animal'] = @('17:50', '21:00') }  # the release task
+        $from = [TimeSpan]::Parse($windows[$Edition][0]); $to = [TimeSpan]::Parse($windows[$Edition][1]); $now = (Get-Date).TimeOfDay
+        if ($now -lt $from -or $now -gt $to) {
+            $message = "A scheduled $Edition start fired at $(Get-Date -Format o), outside its window $($windows[$Edition][0])-$($windows[$Edition][1]). The machine was probably off or asleep at the scheduled time; nothing was run. Start it by hand (Run-Briefing.ps1 -Edition $Edition -Date <yyyy-mm-dd>) if the briefing is still wanted."
+            Write-Log $message
+            Send-LauncherAlert 'missed-window' "Briefing ($Edition): scheduled run missed its window" $message
+            exit 0
+        }
     }
     $python = Get-Command py.exe -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $python) { throw "The Python launcher (py.exe) was not found on PATH for this task's user" }

@@ -288,6 +288,15 @@ class DeliveryTests(unittest.TestCase):
         send = next(call for call in calls if call[0] == "send")
         self.assertEqual(send[3], ["a@example.com", "b@example.com"])
 
+    def test_a_subject_or_recipient_cannot_smuggle_extra_headers(self) -> None:
+        result = self._send(subject_override="Briefing\r\nBcc: attacker@example.net", recipient="a@example.com,b@example.com\r\nBcc: x@example.net")
+        send = next(call for call in FakeSMTP.instances[0].calls if call[0] == "send")
+        message = send[1]
+        self.assertNotIn("\n", message["Subject"])
+        self.assertNotIn("Bcc", message.keys())
+        self.assertEqual(result["recipients"], ["a@example.com"])
+        self.assertEqual(send[3], ["a@example.com"])
+
     def test_edition_overlay_changes_subject_and_recipients(self) -> None:
         result = self._send(edition="animal")
         self.assertEqual(result["subject"], "Animal Science Briefing - Sunday, October 25, 2026")

@@ -224,6 +224,8 @@ class RunnerContext:
         pdf_archive_root = self.profile.briefing_root / "archive" / "pdfs"
 
         scratch_dir = self.generated_dir / "scratch"
+        alerts_dir = self.generated_dir / "alerts"
+        alerts_cutoff = now_dt - timedelta(days=30)  # an alert nobody read yet must outlive the three-day output window
 
         for path in self.generated_dir.rglob("*"):
             if not path.is_file():
@@ -234,7 +236,8 @@ class RunnerContext:
                 in_scratch = True
             except ValueError:
                 in_scratch = False
-            effective_cutoff = scratch_cutoff if in_scratch else cutoff
+            in_alerts = alerts_dir in path.parents
+            effective_cutoff = scratch_cutoff if in_scratch else (alerts_cutoff if in_alerts else cutoff)
             if _path_timestamp(path, time_basis) > effective_cutoff:
                 continue
 

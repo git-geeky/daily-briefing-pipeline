@@ -113,10 +113,13 @@ def script(request: llm.LLMRequest):
             return result_for(clean.replace("### Counterpoint Matrix", "### Misc"), corpus=clean)
         if scenario == "dossier_quote" and stage == "article" and sid == "fixture-story-2":
             quoted = clean_for(story).replace("### Implications\n", '### Implications\n\nThe agency page states "the fixture population numbered 4,321 animals in the census year".\n')
-            return result_for(quoted, corpus="the model's own tool results hold nothing relevant")
+            # the writer's own tool results back the article's figures but not the quotation: only the dossier page can
+            return result_for(quoted, corpus=clean_for(story))
         if scenario == "taxonomy_typo" and stage == "article" and sid == "fixture-story-2":
             return result_for(fx.make_article(story, words=WORDS, source_lines=fx.default_sources(catalog), binomial="Genus speceis"),
                               corpus=clean_for(story))
+        if scenario == "call_error" and stage == "article" and sid == "fixture-story-2":
+            return llm.LLMResult(ok=False, error_kind="empty", error_detail="model returned no text")
         if scenario == "terminal_failed" and sid == "fixture-story-2":
             clean = fx.make_article(story, words=WORDS, source_lines=fx.default_sources(catalog))
             return result_for(clean.replace("### Implications\n", '### Implications\n\nOne author told reporters, "this exact sentence was never published in any source anywhere".\n'),
@@ -160,7 +163,7 @@ os.environ["BRIEFING_DELIVER_COMMAND"] = json.dumps([sys.executable, str(deliver
                                                      "--edition", "{edition}", "--body-text-file", "{body_text}", "--body-html-file", "{body_html}",
                                                      "--subject", "{subject}", "--recipient", "{recipients}"])
 os.environ["ANIMAL_BRIEFING_RECIPIENTS"] = "a@example.com,b@example.com"
-if scenario not in {"held", "late_standalone"}:
+if scenario not in {"held", "late_standalone", "release_held"}:
     os.environ["BRIEFING_FORCE_STANDALONE"] = "1"  # the edition normally rides inside the daily briefing; most scenarios test the stand-alone path
 else:
     daily_root = root / "daily-sibling"
@@ -174,6 +177,8 @@ else:
 now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)  # 05:00 JST on the briefing date
 if scenario == "past_deadline":
     now = datetime(2026, 10, 26, 5, 0, tzinfo=timezone.utc)  # 14:00 JST, after the 11:30 deadline
+if scenario == "release_held" and second_pass:
+    now = datetime(2026, 10, 26, 10, 0, tzinfo=timezone.utc)  # 19:00 JST: the daily briefing's own deadline has long passed
 clock = {"now": now}
 
 fetch_counter = {"n": 0}
@@ -228,7 +233,7 @@ if scenario == "crash_late" and not second_pass:
 if scenario == "busy":
     conductor.lock.path.parent.mkdir(parents=True, exist_ok=True)
     conductor.lock.path.write_text(json.dumps({"pid": os.getppid(), "started_epoch": __import__("time").time()}), encoding="utf-8")
-if scenario in {"interrupted", "terminal_failed"} and not second_pass:
+if scenario in {"interrupted", "terminal_failed", "call_error"} and not second_pass:
     # Simulate a run that drafted everything and then died before the last mile (power loss, killed task).
     def _crash(self, *, degraded):
         raise cc.Deferred("simulated interruption before the last mile")
@@ -277,6 +282,9 @@ import run_reporting  # noqa: E402
 
 usage = (run_reporting.load_run_report(DATE).get("usage") or {}).get("totals") or {}
 out["report_run_status"] = run_reporting.load_run_report(DATE).get("run_status")
+_report = run_reporting.load_run_report(DATE)
+out["visual_qa_status"] = (_report.get("timings") or {}).get("visual_qa", {}).get("status")
+out["gate"] = list(run_reporting.stage_prerequisites_satisfied(_report, "delivery"))
 out["usage_calls"] = usage.get("calls")
 out["usage_cost"] = usage.get("cost_usd")
 out["accounting_errors"] = [e["message"] for e in conductor.state.state["events"] if "accounting failed" in e["message"]]

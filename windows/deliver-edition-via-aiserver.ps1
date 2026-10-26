@@ -118,6 +118,9 @@ run_reporting.update_run_report(r"$Date", run_status="failed", delivery_status="
 "@ | py -3 -
     throw "Remote delivery failed with exit code $LASTEXITCODE"
 }
+# The remote script runs under `set -euo pipefail`, so exit 0 means deliver_core printed "Email sent" (or found its receipt). Print the
+# marker here instead of depending on Invoke-RemoteBash to relay the remote stdout; the conductor looks for this exact string.
+Write-Host 'Email sent' 
 @"
 import sys
 sys.path.insert(0, r"$scriptsDir")

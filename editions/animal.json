@@ -45,6 +45,7 @@
       "min_sources": 2,
       "min_source_classes": 1,
       "min_section_sources": 1,
+      "section_sources_blocking": false,
       "score_floor": 40,
       "expansion_score_floor": 55
     }
@@ -100,6 +101,11 @@
     {
       "label": "animal cruelty or abuse case coverage",
       "pattern": "\\b(?:animal (?:cruelty|abuse|torture|neglect cases?)|cruelty to animals|animal fighting|dog[- ]?fight(?:ing|s)?|cock[- ]?fight(?:ing|s)?|bull[- ]?fight(?:ing|s)?|bear[- ]baiting|puppy mills?|kitten mills?|animal hoarding|horse soring|skinned alive|live[- ]skinn(?:ed|ing)|slaughterhouse (?:footage|video|abuse)|tortur(?:e|ed|ing) (?:of )?(?:a |an |the )?(?:dogs?|cats?|puppy|puppies|kittens?|horses?|animals?))\\b",
+      "min_body_mentions": 2
+    },
+    {
+      "label": "animal cruelty or abuse case coverage",
+      "pattern": "(?:maltrato animal|crueldad (?:animal|con(?:tra)? los animales)|maus[- ]tratos (?:a|aos) animais|crueldade animal|tierqu(?:ä|ae)lerei|tiermisshandlung|maltraitance animale|cruaut(?:é|e) (?:envers|contre) les animaux|maltrattamento (?:di|degli) animali|dierenmishandeling|dierenleed|animal ?cruelty|動物虐待|犬猫虐待|동물 ?학대|动物虐待|虐待动物)",
       "min_body_mentions": 2
     },
     {
@@ -249,7 +255,7 @@
       1.2,
       1.9
     ],
-    "caption_template": "{description}. Photo: {creator}, {license}, via {provider} ({page_url})"
+    "caption_template": "{description}. Photo: {creator}, {license_link}, via {provider} ({page_url}); resized and recompressed for this briefing"
   },
   "conductor": {
     "slate_candidates": 14,

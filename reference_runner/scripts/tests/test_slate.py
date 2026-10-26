@@ -84,6 +84,11 @@ class ValidateTests(unittest.TestCase):
         for expected in ("fewer than 2 sources", "excluded topic", "repeats earlier briefing item", "too-short title"):
             self.assertIn(expected, reasons)
 
+    def test_internal_urls_in_a_slate_entry_do_not_count_as_sources(self) -> None:
+        report = slate.validate_slate([entry("lan", 1, sources=[{"url": "http://192.168.1.1/admin"}, {"url": "http://localhost:8080/x"}, {"url": "https://a.org/1"}])])
+        self.assertEqual(report.kept, [])
+        self.assertIn("fewer than 2 sources", report.dropped[0]["reason"])
+
     def test_development_of_a_prior_story_is_allowed(self) -> None:
         report = slate.validate_slate([entry("dev", 1, title="Saiga genome reveals bottleneck after die-off: new data", novelty="development")],
                                       prior_titles=["Saiga genome reveals bottleneck after die-off"])

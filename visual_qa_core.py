@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 import briefing_paths as briefing_paths_module
+import edition_core
 from run_reporting import file_sha256, set_step_timing, update_run_report
 
 
@@ -177,11 +178,15 @@ def write_visual_audit(date: str) -> Path:
         lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
     ended = time.time()
-    visual_blocked = bool(
-        audit["placeholder_only_articles"]
-        or audit["total_inline_images"] > 1
-        or (audit["total_inline_images"] == 1 and audit["total_high_confidence_images"] != 1)
-    )
+    if edition_core.load_edition().image_mode == "per_article":
+        # One licensed photograph or two per article is this edition's design; the one-image contract is the daily briefing's.
+        visual_blocked = bool(audit["placeholder_only_articles"])
+    else:
+        visual_blocked = bool(
+            audit["placeholder_only_articles"]
+            or audit["total_inline_images"] > 1
+            or (audit["total_inline_images"] == 1 and audit["total_high_confidence_images"] != 1)
+        )
     visual_warned = bool(
         audit["sparse_pages"]
         or audit["placeholder_image_count"]

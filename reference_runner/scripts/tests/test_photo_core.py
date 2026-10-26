@@ -98,7 +98,7 @@ class PhotoStageTests(unittest.TestCase):
         self.assertTrue(Path(detail["local_path"]).exists())
         line = report["_outcomes"]["elephant-story"][0]
         # The caption carries creator, licence, provider and a parenthesis-safe URL.
-        self.assertIn("Photo: Jane Doe, CC BY-SA 4.0, via Wikimedia Commons", line)
+        self.assertIn("Photo: Jane Doe, CC BY-SA 4.0 (https://creativecommons.org/licenses/by-sa/4.0/), via Wikimedia Commons", line)
         self.assertNotIn("(Loxodonta_africana)", line.split("](")[0])
         self.assertIn("%28Loxodonta_africana%29", line)
         # The manifest accepts it: licence token found, kind not weak, extracted as an image.
@@ -181,8 +181,28 @@ class PhotoStageTests(unittest.TestCase):
     def test_licence_normalisation_never_invents_a_version(self) -> None:
         self.assertEqual(photo_core.normalize_license("cc-by-sa"), ("CC BY-SA", "cc-by-sa"))
         self.assertEqual(photo_core.normalize_license("by-sa", "2.0"), ("CC BY-SA 2.0", "cc-by-sa"))
-        for denied in ("CC BY-NC 4.0", "CC BY-ND 2.0", "All rights reserved", "GFDL", "", None):
+        for denied in ("CC BY-NC 4.0", "CC BY-ND 2.0", "All rights reserved", "GFDL", "", None, "PD-US-expired", "PD US 1923"):
             self.assertEqual(photo_core.normalize_license(denied), (None, None), denied)
+        self.assertEqual(photo_core.normalize_license("PD-USGov-NASA"), ("Public domain", "pd"))
+
+    def test_the_jurisdiction_port_stays_in_the_label_and_the_deed_link_follows_it(self) -> None:
+        self.assertEqual(photo_core.normalize_license("CC BY 2.5 PL"), ("CC BY 2.5 PL", "cc-by"))
+        self.assertEqual(photo_core.normalize_license("CC BY-SA 3.0 de"), ("CC BY-SA 3.0 DE", "cc-by-sa"))
+        self.assertEqual(photo_core.license_url("CC BY 2.5 PL"), "https://creativecommons.org/licenses/by/2.5/pl/")
+        self.assertEqual(photo_core.license_url("CC BY-SA 4.0"), "https://creativecommons.org/licenses/by-sa/4.0/")
+        self.assertEqual(photo_core.license_url("CC0 1.0"), "https://creativecommons.org/publicdomain/zero/1.0/")
+        self.assertEqual(photo_core.license_url("Public domain"), "")
+
+    def test_the_caption_carries_the_deed_link_and_the_modification_notice(self) -> None:
+        import json
+
+        template = json.loads((REPO_ROOT / "editions" / "animal.json").read_text(encoding="utf-8"))["photos"]["caption_template"]
+        candidate = photo_core.PhotoCandidate(provider="wikimedia", title="Lynx.jpg", creator="A. Photographer", license="CC BY 2.5 PL",
+                                              license_family="cc-by", width=2000, height=1200, image_url="https://x/y.jpg",
+                                              page_url="https://commons.wikimedia.org/wiki/File:Lynx.jpg", description="A lynx at dusk")
+        caption = photo_core.make_caption(candidate, template)
+        self.assertIn("CC BY 2.5 PL (https://creativecommons.org/licenses/by/2.5/pl/)", caption)
+        self.assertIn("resized", caption)
 
 
 class RequestsFetcherTests(unittest.TestCase):

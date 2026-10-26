@@ -44,19 +44,21 @@ def page_count(path: Path) -> int:
     return len(PdfReader(str(path)).pages)
 
 
-def _build_index(path: Path, parts: list[Part], counts: list[int], index_pages: int, *, heading: str, date_human: str, footnote: str) -> int:
+def _build_index(path: Path, parts: list[Part], counts: list[int], index_pages: int, *, heading: str, date_human: str, footnote: str,
+                 scale: float = 1.0) -> int:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import mm
     from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
-    title = ParagraphStyle("t", fontName="Helvetica-Bold", fontSize=20, leading=24, spaceAfter=2)
-    sub = ParagraphStyle("s", fontName="Helvetica", fontSize=11, leading=14, textColor=colors.HexColor("#555555"), spaceAfter=10)
-    label = ParagraphStyle("l", fontName="Helvetica-Bold", fontSize=13, leading=16, spaceBefore=10)
-    meta = ParagraphStyle("m", fontName="Helvetica", fontSize=9.5, leading=12, textColor=colors.HexColor("#444444"), spaceAfter=3)
-    item = ParagraphStyle("i", fontName="Helvetica", fontSize=9, leading=11.5, leftIndent=14, firstLineIndent=-14)
-    foot = ParagraphStyle("f", fontName="Helvetica-Oblique", fontSize=8.5, leading=11, textColor=colors.HexColor("#666666"), spaceBefore=14)
+    k = scale
+    title = ParagraphStyle("t", fontName="Helvetica-Bold", fontSize=20 * k, leading=24 * k, spaceAfter=2)
+    sub = ParagraphStyle("s", fontName="Helvetica", fontSize=11 * k, leading=14 * k, textColor=colors.HexColor("#555555"), spaceAfter=10 * k)
+    label = ParagraphStyle("l", fontName="Helvetica-Bold", fontSize=13 * k, leading=16 * k, spaceBefore=10 * k)
+    meta = ParagraphStyle("m", fontName="Helvetica", fontSize=9.5 * k, leading=12 * k, textColor=colors.HexColor("#444444"), spaceAfter=3 * k)
+    item = ParagraphStyle("i", fontName="Helvetica", fontSize=9 * k, leading=11.5 * k, leftIndent=14, firstLineIndent=-14)
+    foot = ParagraphStyle("f", fontName="Helvetica-Oblique", fontSize=8.5 * k, leading=11 * k, textColor=colors.HexColor("#666666"), spaceBefore=14 * k)
 
     story: list[Any] = [Paragraph(escape(_latin(heading)), title), Paragraph(escape(_latin(date_human)), sub)]
     first = index_pages + 1
@@ -100,11 +102,15 @@ def combine_pdfs(parts: list[Part], out_path: Path, *, heading: str, date_human:
     tmp_out = out_path.with_name(out_path.name + ".tmp")
     try:
         index_pages = 1
-        for _ in range(3):  # the page count of the index must be known before the page ranges in it are printed
-            actual = _build_index(index_path, parts, counts, index_pages, heading=heading, date_human=date_human, footnote=footnote)
-            if actual == index_pages:
+        for scale in (1.0, 0.92, 0.85, 0.78):  # a long list that spills two lines onto a second page is shrunk to fit one
+            index_pages = 1
+            for _ in range(3):  # the page count of the index must be known before the page ranges in it are printed
+                actual = _build_index(index_path, parts, counts, index_pages, heading=heading, date_human=date_human, footnote=footnote, scale=scale)
+                if actual == index_pages:
+                    break
+                index_pages = actual
+            if index_pages == 1:
                 break
-            index_pages = actual
         writer = PdfWriter()
         writer.append(str(index_path), outline_item="Index")
         starts: list[int] = []

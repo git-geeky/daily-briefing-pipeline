@@ -56,6 +56,17 @@ class DailyConductorTests(unittest.TestCase):
         self.assertEqual(result["accounting_errors"], [])
         self.assertEqual(result["usage_calls"], sum(result["calls"].values()))
 
+    def test_a_day_with_no_updates_shows_no_empty_updates_heading(self) -> None:
+        """Found in the fifth live run: an empty "PART VI - UPDATES" heading sat directly above the closing analysis."""
+        result = run_daily("no_updates", self.fresh())
+        self.assertEqual(result["exit"], 10, result["events"])  # delivered, and honest that one story short of target
+        self.assertIn("20 of 21 target stories were finished", result["notes"])
+        self.assertNotIn("PART VI - UPDATES", result["assembled_text"])
+        self.assertIn("# PART V - HUMAN INTEREST", result["assembled_text"])
+        self.assertIn("# CLOSING ANALYSIS", result["assembled_text"])
+        self.assertEqual(result["validation"]["blocking_errors"], [])
+        self.assertTrue(result["delivered"] and result["pdf_exists"])
+
     def test_an_incomplete_source_audit_is_waived_and_said_so_instead_of_blocking_the_send(self) -> None:
         result = run_daily("audit_incomplete", self.fresh())
         self.assertEqual(result["exit"], 0, result["events"])

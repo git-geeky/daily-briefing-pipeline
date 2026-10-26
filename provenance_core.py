@@ -50,6 +50,11 @@ _NUMBER_RE = re.compile(
 _CURLY_QUOTE_RE = re.compile(r"“([^”]*)”")
 DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s)\]>\"'|,;]+[^\s)\]>\"'|,;.]")
 _URL_RE = re.compile(r"https?://[^\s)>\]]+")
+
+
+def clean_doi(doi: str) -> str:
+    """A DOI as written in prose is often wrapped in markdown ("**doi:10.1038/x.**") or followed by punctuation; neither is part of it."""
+    return re.sub(r"[*_`.,;:)\]\u2019\u201d\"']+$", "", doi.strip())
 _SKIP_SECTIONS = ("primary sources", "watch next", "sources")
 
 
@@ -62,6 +67,7 @@ class NumberClaim:
     value: float | None = None       # the figure as a number (a percentage stays as written: 9.6 for "9.6%")
     window: str = ""                 # the surrounding prose, where the operands of a stated calculation appear
     sentence: str = ""               # the claim's own sentence: the calculation wording must be here, not merely nearby
+    local: str = ""                  # that sentence and the one before it: the only place a figure without explicit calculation wording may look
     decimals: int = 0
 
 
@@ -247,6 +253,15 @@ def _sentence_around(text: str, start: int, end: int) -> str:
     return text[left + 1: min(right_candidates) if right_candidates else len(text)]
 
 
+def _sentence_with_previous(text: str, start: int, end: int) -> str:
+    sentence = _sentence_around(text, start, end)
+    begin = text.find(sentence, max(0, start - len(sentence)))
+    if begin <= 0:
+        return sentence
+    left = max(text.rfind(". ", 0, begin - 1), text.rfind("\n", 0, begin - 1))
+    return text[left + 1: begin] + sentence
+
+
 def _claim_value(int_part: str, frac: str | None, tail: str) -> float | None:
     try:
         value = float(int_part.replace(",", "") + (f".{frac}" if frac else ""))
@@ -277,7 +292,7 @@ def extract_numeric_claims(markdown: str) -> list[NumberClaim]:
         window = re.sub(r"\s+", " ", text[max(0, match.start() - 300): match.end() + 300])
         claims.append(NumberClaim(text=shown, forms=forms, context=context, value=_claim_value(match.group("int"), match.group("frac"), tail),
                                   window=window, sentence=_sentence_around(text, match.start(), match.end()),
-                                  decimals=len(match.group("frac") or "")))
+                                  local=_sentence_with_previous(text, match.start(), match.end()), decimals=len(match.group("frac") or "")))
     return claims
 
 
@@ -285,6 +300,13 @@ def extract_numeric_claims(markdown: str) -> list[NumberClaim]:
 # The writer's own arithmetic
 # --------------------------------------------------------------------------------------------
 _DERIVATION_CUE_RE = re.compile(r"(?i)\b(?:comput|calculat|deriv|subtract|difference|ratio|sum of|total of|divid|multipl|percentage points?|out of)\w*|[=\u00f7\u00d7]")
+
+
+# Comparisons that are plainly arithmetic ("a margin of 4.43 million votes", "0.7 points lower than", "2.5 hours elapsed"): too common in
+# ordinary prose to accept anywhere, so they count only when both operands are in the same or the preceding sentence as well as in the sources.
+_WEAK_DERIVATION_CUE_RE = re.compile(
+    r"(?i)\b(?:margin|gap|elapsed|combined|altogether|in total|(?:points?|pp)\s+(?:above|below|higher|lower|ahead|behind)|"
+    r"(?:higher|lower|larger|smaller|greater|fewer|less|more|longer|shorter|faster|slower|older|younger)\s+than|times\s+(?:as\s+\w+|the|higher|more|larger))\b")
 
 
 def _numeric_values(known: set[str]) -> list[float]:
@@ -307,10 +329,14 @@ def derivable(claim: NumberClaim, known_values: list[float]) -> bool:
     """True when ``claim`` is arithmetic the writer says it did ("computed here", "by subtraction", "18/434") and the result can be
     reproduced from two figures that appear both in the sources and in the article's own text beside the claim. High precision on
     purpose: without the cue wording, or without both operands in the sources, a figure stays unverified."""
-    if claim.value is None or not _DERIVATION_CUE_RE.search(claim.sentence):
+    cue_text = claim.window if "|" in claim.sentence else claim.sentence  # a table row has no sentence: its note sits above or beside it
+    if claim.value is None:
+        return False
+    strong = bool(_DERIVATION_CUE_RE.search(cue_text))
+    if not strong and not (claim.local and _WEAK_DERIVATION_CUE_RE.search(claim.sentence)):
         return False
     operands: set[float] = set()
-    for match in _NUMBER_RE.finditer(claim.window):
+    for match in _NUMBER_RE.finditer(claim.window if strong else claim.local):
         value = _claim_value(match.group("int"), match.group("frac"), match.group("tail") or "")
         if value is not None and _near(known_values, value, relative=1e-9, absolute=1e-9):
             operands.add(value)
@@ -321,9 +347,9 @@ def derivable(claim: NumberClaim, known_values: list[float]) -> bool:
         for b in operands:
             if a == b:
                 continue
-            results = [a - b, a + b, a * b]
+            results = [a - b, a + b, a * b] if strong else [a - b, a + b]
             if b:
-                results += [a / b, 100 * a / b, 100 * (a - b) / b]
+                results += [a / b, 100 * a / b, 100 * (a - b) / b] if strong else [a / b] + ([100 * (a - b) / b] if "%" in claim.text else [])
             if any(abs(abs(result) - target) <= tolerance for result in results):
                 return True
     return False
@@ -488,7 +514,16 @@ def check_doi(doi: str, citation_text: str, fetcher: JsonFetcher) -> dict[str, A
     except Exception as exc:  # noqa: BLE001
         message = str(exc)
         if "404" in message:
-            return {"status": "not_found", "detail": "Crossref has no record of this DOI"}
+            # Crossref is one registration agency of several: DataCite (Zenodo, figshare, Dryad), JaLC, mEDRA... also issue real DOIs.
+            try:
+                handle = fetcher.get_json(f"https://doi.org/api/handles/{doi}")
+            except Exception as handle_exc:  # noqa: BLE001
+                if "404" in str(handle_exc):
+                    return {"status": "not_found", "detail": "no registration agency has a record of this DOI"}
+                return {"status": "unchecked", "detail": f"doi.org lookup failed: {str(handle_exc)[:120]}"}
+            if isinstance(handle, dict) and handle.get("responseCode") == 1:
+                return {"status": "ok", "detail": "registered with an agency other than Crossref (title not compared)"}
+            return {"status": "not_found", "detail": "no registration agency has a record of this DOI"}
         return {"status": "unchecked", "detail": f"Crossref lookup failed: {message[:120]}"}
     message = (payload or {}).get("message") or {}
     titles = message.get("title") or []
@@ -553,12 +588,12 @@ def _doi_citations(markdown: str, entries: list[str]) -> list[tuple[str, str]]:
     seen: set[str] = set()
     for entry in entries:
         for doi in DOI_RE.findall(entry):
-            doi = doi.rstrip(".,;")
+            doi = clean_doi(doi)
             if doi not in seen:
                 seen.add(doi)
                 found.append((doi, entry))
     for doi in DOI_RE.findall("\n".join(line for line in markdown.splitlines() if not line.lstrip().startswith(("![", "<!--")))):
-        doi = doi.rstrip(".,;")
+        doi = clean_doi(doi)
         if doi not in seen:
             seen.add(doi)
             found.append((doi, ""))
@@ -641,6 +676,6 @@ def check_article(
 
 
 __all__ = [
-    "NumberClaim", "ProvenanceReport", "check_article", "check_doi", "default_url_checker", "extract_numeric_claims",
+    "NumberClaim", "ProvenanceReport", "check_article", "check_doi", "clean_doi", "default_url_checker", "extract_numeric_claims",
     "extract_quotes", "normalize_text", "quote_in_corpus",
 ]

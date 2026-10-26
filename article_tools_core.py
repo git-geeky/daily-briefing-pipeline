@@ -165,6 +165,20 @@ def find_unread_source_mentions(markdown: str, *, limit: int = 6) -> list[str]:
     return found
 
 
+def skip_reason(text: str) -> str | None:
+    """The writer's refusal, if its output is one: it starts with ``SKIP``, or it is a short note with no article title that carries a
+    ``SKIP:`` line ("Stopping here: only the press release could be read.\\n\\nSKIP: low_confidence"). The second form used to fail the
+    article as unusable output and buy it again on the next pass."""
+    text = (text or "").strip()
+    if text.upper().startswith("SKIP"):
+        return text
+    if not re.search(r"(?m)^##\s+\S", text) and len(text) < 2500:
+        match = re.search(r"(?mi)^\s*(SKIP\b.*)$", text)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
 _CONFIDENCE_LINE_RE = re.compile(r"(?im)^[ \t>]*\*\*confidence:?\*\*:?[ \t]*(.+)$")
 
 

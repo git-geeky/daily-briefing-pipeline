@@ -24,7 +24,9 @@ import json
 import os
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -460,14 +462,19 @@ class RequestsFetcher:
         self._session.headers.update({"User-Agent": USER_AGENT, "Accept-Language": "en"})
         net_safety.mount_safe(self._session, max_bytes=max_bytes)  # public addresses only, every redirect hop, capped decoded body
         self.timeout, self.retries, self._sleep, self._clock = timeout, retries, sleep, clock
-        self._last_request: dict[str, float] = {}
+        self._next_slot: dict[str, float] = {}
+        self._lock = threading.Lock()
 
     def _space(self, url: str) -> None:
+        """At least MIN_INTERVAL_SECONDS between requests to one host, however many threads ask: each caller reserves the next free slot
+        for that host under the lock and sleeps outside it. Different hosts do not wait for each other."""
         host = re.sub(r"^https?://", "", url).split("/", 1)[0]
-        wait = self.MIN_INTERVAL_SECONDS - (self._clock() - self._last_request.get(host, -1e9))
-        if wait > 0:
-            self._sleep(wait)
-        self._last_request[host] = self._clock()
+        with self._lock:
+            now = self._clock()
+            slot = max(now, self._next_slot.get(host, now))
+            self._next_slot[host] = slot + self.MIN_INTERVAL_SECONDS
+        if slot - now > 0:
+            self._sleep(slot - now)
 
     def _get(self, url: str, params: dict[str, Any] | None = None):
         last: Exception | None = None
@@ -517,17 +524,35 @@ def run_photo_stage(
 
     used_pages: set[str] = set()
     outcomes: dict[str, StoryPhotos] = {}
-    total = 0
-    for story in stories:
-        remaining = (max_total - total) if max_total else per_max
-        if remaining <= 0:
-            outcomes[str(story["story_id"])] = StoryPhotos(str(story["story_id"]), [], rejected=[{"reason": "max_total reached"}])
-            continue
-        outcome = photos_for_story(
-            fetcher, story, image_dir=image_dir, policy=policy, per_min=per_min,
-            per_max=min(per_max, remaining), used_pages=used_pages,
-        )
-        total += len(outcome.chosen)
+    workers = max(1, int(policy.get("workers", 4)))
+
+    def search(story: dict) -> StoryPhotos:
+        return photos_for_story(fetcher, story, image_dir=image_dir, policy=policy, per_min=per_min, per_max=per_max, used_pages=used_pages)
+
+    # The stories are searched side by side (the fetcher spaces requests per host, so the providers' servers are still treated gently).
+    # Two stories can pick the same photograph in the same moment, and the cap on the whole briefing is applied here, in story order:
+    # earlier stories keep their photographs, later ones lose the duplicate or the surplus.
+    if workers == 1 or len(stories) < 2:
+        results = [search(story) for story in stories]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(search, stories))
+    total, taken_pages = 0, set()
+    for outcome in results:
+        keep: list[int] = []
+        for index, entry in enumerate(outcome.chosen):
+            if entry["page_url"] in taken_pages:
+                outcome.rejected.append({"title": str(entry.get("title", ""))[:90], "reason": "chosen for an earlier article in this briefing"})
+            elif max_total and total >= max_total:
+                outcome.rejected.append({"title": str(entry.get("title", ""))[:90], "reason": "max_total reached"})
+            else:
+                keep.append(index)
+                taken_pages.add(entry["page_url"])
+                total += 1
+        if len(keep) != len(outcome.chosen):
+            outcome.chosen = [outcome.chosen[i] for i in keep]
+            outcome.markdown_lines = [outcome.markdown_lines[i] for i in keep]
+            outcome.status = "ok" if len(outcome.chosen) >= max(per_min, 1) else "missing"
         outcomes[outcome.story_id] = outcome
 
     details = []

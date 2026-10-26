@@ -101,7 +101,8 @@
       "min_source_classes": 2,
       "score_floor": 56,
       "expansion_score_floor": 70,
-      "reader_value_required": true
+      "reader_value_required": true,
+      "omit_when_empty": true
     },
     "closing": {
       "min_count": 1,

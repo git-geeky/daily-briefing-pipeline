@@ -69,7 +69,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "strip_unread_mentions": False,
     # {"humaninterest": "animals"}: stories of the first section are written only to fill what the second could not (low-confidence
     # or unusable stories), up to the section's maximum, and never as part of the target count.
-    "fill_sections": {}, "fill_reserves": 4,
+    "fill_sections": {}, "fill_reserves": 4, "slate_reserve_slack": 2,
     # A fill-in is a story about people and animals: titles and angles matching this pattern (prizes, appointments, funding, courses)
     # and fill-ins the slate itself calls thin are dropped before anything is written.
     "fill_blocklist": "",
@@ -844,9 +844,41 @@ class Conductor:
         try:
             import briefing_manifest
 
-            return [str(i.get("title")) for i in briefing_manifest.load_prior_items(self.date) if i.get("title")][:60]
+            titles = [str(i.get("title")) for i in briefing_manifest.load_prior_items(self.date) if i.get("title")][:60]
         except Exception:  # noqa: BLE001
+            titles = []
+        return titles + self.recent_skip_titles()
+
+    # ---- memory of stories that were dropped -------------------------------------------
+    SKIP_MEMORY_DAYS = 10
+
+    def _skip_memory_path(self) -> Path:
+        return Path(self.paths.research_vault_dir()) / f"recent-skips-{self.edition.edition_id}.json"
+
+    def recent_skip_titles(self) -> list[str]:
+        """Titles of stories dropped in the last ten days (low confidence, sources that did not support the angle, no usable evidence).
+        They are listed with the recent briefing titles, so the slate does not re-select them unless it marks a real development."""
+        try:
+            records = load_json(self._skip_memory_path(), []) or []
+            cutoff = (datetime.fromisoformat(f"{self.date}T00:00:00") - timedelta(days=self.SKIP_MEMORY_DAYS)).date().isoformat()
+            return [str(r["title"]) for r in records if r.get("title") and str(r.get("date", "")) >= cutoff and r.get("date") != self.date]
+        except Exception:  # noqa: BLE001 - a memory must never stop a run
             return []
+
+    def _story_title(self, sid: str) -> str:
+        slate = load_json(Path(self.ctx.slate_path(self.date)), {}) or {}
+        return next((str(s.get("title") or "") for s in list(slate.get("selected", [])) + list(slate.get("backups", [])) if s.get("story_id") == sid), "")
+
+    def _remember_skip(self, sid: str, title: str, reason: str) -> None:
+        try:
+            path = self._skip_memory_path()
+            cutoff = (datetime.fromisoformat(f"{self.date}T00:00:00") - timedelta(days=self.SKIP_MEMORY_DAYS * 3)).date().isoformat()
+            records = [r for r in (load_json(path, []) or []) if str(r.get("date", "")) >= cutoff and r.get("story_id") != sid]
+            records.append({"story_id": sid, "title": title, "reason": reason[:160], "date": self.date})
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write(path, json.dumps(records, ensure_ascii=False, indent=1) + "\n")
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"skip memory not written: {exc!r}")
 
     def stage_ingest(self) -> None:
         if self.state.done("ingest"):
@@ -983,11 +1015,12 @@ class Conductor:
         fill = self.fill_sections()
         wanted = self.total_target() + int(self.settings.get("slate_reserves", 4))
         have = len([e for e in report.kept if e.get("section") not in fill])
-        if have >= wanted or self.past_deadline():
+        # One reserve short is not worth a second Opus call (a live run paid one for 12 extra reserves when 1 was missing).
+        if have >= wanted - int(self.settings.get("slate_reserve_slack", 2)) or self.past_deadline():
             return
         self.log(f"slate: {have} usable stories and {wanted} wanted; asking once for reserves")
         note = (f"\n\nNOTE: these stories are already chosen. Return ONLY additional stories as a JSON array in the same format, at least "
-                f"{wanted - have} of them, to serve as reserves for stories that fail verification. Thin material is acceptable for "
+                f"{wanted - have} and at most {wanted - have + 3} of them, to serve as reserves for stories that fail verification. Thin material is acceptable for "
                 "reserves. Do not repeat or rephrase any of these:\n" + "\n".join(f"- {s['title']}" for s in report.kept))
         try:
             result = self.call("slate", self.prompt("slate", {**values, "SPEC": values["SPEC"] + note}), role="slate",
@@ -1089,13 +1122,16 @@ class Conductor:
         plan = self.plan()
         queue = list(slate["selected"])
         attempted: set[str] = set()
-        for round_no in range(1, 5):
+        replacement_rounds = 0
+        for round_no in range(1, int(self.settings.get("article_rounds", 6)) + 1):
             todo = [s for s in queue if s["story_id"] not in attempted]
             if not todo:
                 break
             self.log(f"articles: round {round_no}, {len(todo)} stories")
             self._write_many(todo)
             attempted.update(s["story_id"] for s in todo)
+            if round_no > 1:
+                replacement_rounds += 1
             queue = []
             fill = self.fill_sections()
             for section, quota in plan.items():
@@ -1109,7 +1145,9 @@ class Conductor:
                 # likely to end up low-confidence, and the confidence gate catches whatever thin story still gets written.
                 solid = [b for b in reserves if b.get("material") != "thin"]
                 thin = [b for b in reserves if b.get("material") == "thin"]
-                chosen = solid[:missing]
+                # The first replacement round asks for exactly what is missing. If that fell short too, the next ones ask for one more: about
+                # four in ten stories end in a skip, and a live run spent four rounds on two slots while thirteen solid reserves sat unused.
+                chosen = solid[: missing + (1 if replacement_rounds >= 1 else 0)]
                 for filler_section, primary in fill.items():
                     if primary != section or len(chosen) >= missing:
                         continue
@@ -1297,8 +1335,9 @@ class Conductor:
             corpus += self._trusted_tool_corpus(result, outcome)
             raw = result.text.strip()
             atomic_write(self.articles_dir / f"{sid}.raw.md", raw + "\n")
-            if raw.upper().startswith("SKIP"):
-                outcome.status, outcome.reason = "skipped", raw[:200]
+            skip = tools.skip_reason(raw)
+            if skip:
+                outcome.status, outcome.reason = "skipped", skip[:200]
                 self._save_article_meta(sid, outcome)
                 return outcome
             try:
@@ -1355,8 +1394,9 @@ class Conductor:
                 outcome.flags.append(f"repair call failed: {fix.error_kind}")
                 break
             corpus += self._trusted_tool_corpus(fix, outcome)
-            if fix.text.strip().upper().startswith("SKIP"):
-                outcome.status, outcome.reason = "skipped", fix.text.strip()[:200]
+            fix_skip = tools.skip_reason(fix.text)
+            if fix_skip:
+                outcome.status, outcome.reason = "skipped", fix_skip[:200]
                 self._save_article_meta(sid, outcome)
                 return outcome
             try:
@@ -1427,6 +1467,10 @@ class Conductor:
             outcome.failed_passes += 1
             outcome.terminal = outcome.failed_passes >= 2
         atomic_write(self.article_meta_path(sid), json.dumps(outcome.__dict__, indent=1, ensure_ascii=False) + "\n")
+        if outcome.status == "skipped" or (outcome.status == "failed" and outcome.terminal):
+            title = self._story_title(sid)
+            if title:
+                self._remember_skip(sid, title, outcome.reason)
         self.state.mark(f"article:{sid}", outcome.status, words=outcome.words, cost=round(outcome.cost_usd, 3))
         if outcome.status in {"done", "skipped"}:
             self.draft_path(sid).unlink(missing_ok=True)  # a terminal failure keeps its draft (and the evidence corpus) for diagnosis
@@ -1664,8 +1708,9 @@ class Conductor:
                               f"{titles[section]} today\n\nA visible gap is reported instead of padding a weak article.\n")
             if bodies:
                 fragment = tools.compose_section(titles[section], bodies)
-            else:  # a fill-in section with nothing to fill shows no empty heading
-                fragment = "" if section in self.fill_sections() else f"# {titles[section]}\n"
+            else:  # a fill-in section, or one the edition lets disappear, with nothing in it shows no empty heading
+                hidden = section in self.fill_sections() or bool(self.edition.rule(section).get("omit_when_empty"))
+                fragment = "" if hidden else f"# {titles[section]}\n"
             atomic_write(Path(self.paths.fragment_path(section, self.date)), fragment)
         if self.digest_section:
             digest = load_json(self.articles_dir / "digest.json", {}).get("items", [])
@@ -1878,6 +1923,27 @@ class Conductor:
         carrier = self.edition.get("conductor.delivery.held_for")
         return bool(carrier) and self._shipped_without_me(str(carrier))
 
+    def verification_notes(self, articles: list[dict[str, Any]], summaries: list[dict[str, Any]]) -> list[str]:
+        """What the reader is told about unverified material, without a list of slugs: the stories where it matters by title (three or
+        more figures, or any quotation or DOI, not found in what the writer had), and only a count for the many that merely rest on
+        page summaries or carry a stray figure (half of a live daily briefing would otherwise be named)."""
+        serious, mild = [], 0
+        for article, summary in zip(articles, summaries):
+            if not article["meta"].get("flags"):
+                continue
+            prov = article["meta"].get("provenance") or {}
+            title = str(summary.get("title") or article["story"].get("title") or article["story"]["story_id"])
+            if len(prov.get("unmatched_numbers") or []) >= 3 or prov.get("unmatched_quotes") or [d for d, i in (prov.get("dois") or {}).items() if i.get("status") in {"not_found", "mismatch"}]:
+                serious.append(title)
+            else:
+                mild += 1
+        notes = []
+        if serious:
+            notes.append("figures or quotations not verified against the sources fetched in: " + "; ".join(serious))
+        if mild:
+            notes.append(f"{mild} more stor{'y rests' if mild == 1 else 'ies rest'} partly on summaries of pages or {'carries' if mild == 1 else 'carry'} a stray unverified figure")
+        return notes
+
     def quality_metrics(self, articles: list[dict[str, Any]]) -> dict[str, Any]:
         """One comparable record per day: validators reward form, so drift toward thin, unverified or boilerplate output has to be
         visible as a trend (quality-history.jsonl beside the run state)."""
@@ -1915,9 +1981,7 @@ class Conductor:
         import run_reporting
 
         summaries = [tools.article_summary(a["path"].read_text(encoding="utf-8"), a["story"]) for a in articles]
-        flagged = [a["story"]["story_id"] for a in articles if (a["meta"].get("flags"))]
-        if flagged:
-            notes.append(f"figures not fully verified against fetched sources in: {', '.join(flagged)}")
+        notes.extend(self.verification_notes(articles, summaries))
         digest = [i.splitlines()[0].lstrip("# ").strip() for i in load_json(self.articles_dir / "digest.json", {}).get("items", [])]
         text, body_html = tools.compose_email_bodies(label=self.edition.label, date_human=human_date(self.date), summaries=summaries,
                                                     notes=notes, digest_titles=digest)

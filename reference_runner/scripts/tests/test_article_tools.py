@@ -135,6 +135,17 @@ class UnreadSourceMentionTests(unittest.TestCase):
         self.assertEqual(tools.find_unread_source_mentions("## T\n\nThe survey counted 429 tigers across five parks. Counts rose in three.\n"), [])
 
 
+class SkipReasonTests(unittest.TestCase):
+    def test_a_note_before_the_skip_line_is_still_a_skip(self) -> None:
+        text = "Stopping here: only the press release and the abstract could be read.\n\nSKIP: low_confidence"
+        self.assertEqual(tools.skip_reason(text), "SKIP: low_confidence")
+        self.assertTrue(tools.skip_reason("SKIP: cruelty").startswith("SKIP"))
+
+    def test_an_article_that_mentions_skip_is_not_a_skip_and_prose_without_one_is_not_either(self) -> None:
+        self.assertIsNone(tools.skip_reason("## A real title\n\nBody that says we should SKIP nothing.\n"))
+        self.assertIsNone(tools.skip_reason("I could not find the paper, sorry."))
+
+
 class NormalizeTests(unittest.TestCase):
     def test_messy_output_is_repaired_without_touching_content(self) -> None:
         raw = fx.make_article(STORY, words=600, messy=True)

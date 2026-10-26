@@ -384,3 +384,73 @@ class DerivedFigureTests(unittest.TestCase):
         self.assertTrue(strict.needs_repair())
         self.assertIn("fetch summary", strict.repair_brief())
 
+class DoiRobustnessTests(unittest.TestCase):
+    """Found in the fifth live run: a good article failed on "10.1038/x.**", and DataCite DOIs are not in Crossref."""
+
+    class Fetcher:
+        def get_json(self, url, params=None):
+            if "api.crossref.org" in url:
+                if "10.1038/s41598-018-37324-w" in url:
+                    return {"message": {"title": ["Stable isotope evidence of plastic ingestion in seabirds"]}}
+                raise RuntimeError("404 Not Found")
+            if "api/handles" in url:
+                if "10.5281/zenodo.20072872" in url:
+                    return {"responseCode": 1, "handle": "10.5281/zenodo.20072872"}
+                raise RuntimeError("404 Not Found")
+            raise RuntimeError("unexpected " + url)
+
+    def check(self, article: str):
+        return prov.check_article(article, [], json_fetcher=self.Fetcher(), url_checker=lambda url: 200)
+
+    def test_markdown_emphasis_and_punctuation_are_not_part_of_the_doi(self) -> None:
+        self.assertEqual(prov.clean_doi("10.1038/s41598-018-37324-w.**"), "10.1038/s41598-018-37324-w")
+        self.assertEqual(prov.clean_doi("10.1038/x_y)."), "10.1038/x_y")
+        report = self.check("## T\nThe isotope study is **doi:10.1038/s41598-018-37324-w.** and others.\n")
+        self.assertEqual(list(report.dois), ["10.1038/s41598-018-37324-w"])
+        self.assertEqual(report.dois["10.1038/s41598-018-37324-w"]["status"], "ok")
+        self.assertFalse(report.bad_dois)
+
+    def test_a_doi_from_another_registration_agency_is_not_called_fabricated(self) -> None:
+        report = self.check("## T\nThe data are archived at doi:10.5281/zenodo.20072872 and doi:10.5281/zenodo.99999999.\n")
+        self.assertEqual(report.dois["10.5281/zenodo.20072872"]["status"], "ok")
+        self.assertEqual(report.dois["10.5281/zenodo.99999999"]["status"], "not_found")
+        self.assertEqual(report.bad_dois, ["10.5281/zenodo.99999999"])
+
+    def test_percentage_shares_in_a_table_are_derived_when_the_note_above_says_computed(self) -> None:
+        corpus = ["Of 434 prey records, 229 were wildebeest and 75 were zebra."]
+        article = ("## T\nShares are computed here from the 434 records.\n\n| Prey | Records | Share |\n|---|---|---|\n"
+                   "| Wildebeest | 229 | 52.8% |\n| Zebra | 75 | 17.3% |\n| Invented | 12 | 91.4% |\n")
+        report = prov.check_article(article, corpus, check_network=False)
+        self.assertEqual(sorted(report.derived_numbers), ["17.3%", "52.8%"])
+        self.assertIn("91.4%", [n["text"] for n in report.unmatched_numbers])
+
+
+
+class WeakCueArithmeticTests(unittest.TestCase):
+    """Found in the fifth live run: plain comparisons ("a margin of 4.4 million", "0.7 points lower") are arithmetic too, but are common
+    enough in prose that they count only when both operands are in the same or the previous sentence as well as in the sources."""
+
+    CORPUS = ["Smith received 54.2 million votes and Jones 49.8 million. Turnout was 61.4% against 62.1% earlier."]
+
+    def check(self, article: str):
+        return prov.check_article("## T\n" + article + "\n", self.CORPUS, check_network=False)
+
+    def test_a_margin_and_a_points_difference_with_both_operands_beside_them_are_derived(self) -> None:
+        report = self.check("Smith won 54.2 million votes to Jones's 49.8 million, a margin of 4.4 million votes. "
+                            "Turnout was 61.4% against 62.1% earlier, 0.7 points lower than before.")
+        self.assertEqual(report.unmatched_numbers, [])
+        self.assertEqual(sorted(report.derived_numbers), ["0.7", "4.4 million"])
+
+    def test_the_operand_may_sit_in_the_previous_sentence(self) -> None:
+        report = self.check("Smith won 54.2 million votes and Jones 49.8 million. The margin was 4.4 million.")
+        self.assertEqual(report.unmatched_numbers, [])
+
+    def test_one_operand_missing_or_far_away_is_not_accepted(self) -> None:
+        self.assertEqual([n["text"] for n in self.check("Smith won 54.2 million votes. The margin of 9.9 million votes was unprecedented.").unmatched_numbers],
+                         ["9.9 million"])
+        far = self.check("Smith won 54.2 million votes and Jones 49.8 million.\n\nAn unrelated paragraph. The margin was 4.4 million.")
+        self.assertEqual([n["text"] for n in far.unmatched_numbers], ["4.4 million"])
+
+    def test_without_any_comparison_wording_the_figure_stays_unverified(self) -> None:
+        report = self.check("Smith won 54.2 million votes and Jones 49.8 million, and 4.4 million people stayed away.")
+        self.assertEqual([n["text"] for n in report.unmatched_numbers], ["4.4 million"])

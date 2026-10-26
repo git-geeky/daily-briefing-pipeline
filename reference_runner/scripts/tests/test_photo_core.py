@@ -243,3 +243,48 @@ class RequestsFetcherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class ParallelPhotoTests(unittest.TestCase):
+    """Found in the fifth live run: the photo stage took 16 minutes, strictly one request at a time."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+
+    def stage(self, fetcher, stories, **kwargs):
+        return photo_core.run_photo_stage(stories, image_dir=self.dir / "img", fetcher=fetcher, edition=policy_edition(), date="2026-10-26", **kwargs)
+
+    def test_requests_to_one_host_stay_spaced_however_many_threads_ask_and_other_hosts_do_not_wait(self) -> None:
+        import threading
+
+        waits: list[float] = []
+        lock = threading.Lock()
+
+        def sleep(seconds):
+            with lock:
+                waits.append(round(seconds, 3))
+
+        fetcher = photo_core.RequestsFetcher(sleep=sleep, clock=lambda: 100.0)
+        threads = [threading.Thread(target=fetcher._space, args=("https://commons.wikimedia.org/w/api.php",)) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(waits), [1.0, 2.0, 3.0], "the first caller goes at once, the others take the next free seconds")
+        waits.clear()
+        fetcher._space("https://api.inaturalist.org/v1/observations")
+        self.assertEqual(waits, [], "a different host has its own schedule")
+
+    def test_the_cap_on_the_whole_briefing_and_duplicate_photographs_are_resolved_in_story_order(self) -> None:
+        fetcher = FakeFetcher(commons=[commons_page("Elephant drinking.jpg"), commons_page("Elephant walking.jpg")])
+        stories = [{"story_id": f"story-{n}", "photo_queries": ["Loxodonta africana"]} for n in range(1, 5)]
+        report = self.stage(fetcher, stories)
+        per_story = {sid: len(info["chosen"]) for sid, info in report["stories"].items()}
+        pages = [d["page_url"] for d in report["details"]]
+        self.assertEqual(len(pages), len(set(pages)), "no photograph is used twice in one briefing")
+        self.assertEqual(sum(per_story.values()), report["total_images"])
+        self.assertGreaterEqual(per_story["story-1"], 1, "the earliest story keeps its photograph")
+        for sid, lines in report["_outcomes"].items():
+            self.assertEqual(len(lines), per_story[sid], "the markdown lines follow the photographs that were kept")
+

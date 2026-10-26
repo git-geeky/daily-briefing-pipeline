@@ -52,7 +52,7 @@ def script(request: llm.LLMRequest):
     if stage == "probe":
         return ok("ok")
     if stage == "slate":
-        slate = dfx.make_daily_slate(part4=1 if scenario == "short_section" else 4)
+        slate = dfx.make_daily_slate(part4=1 if scenario == "short_section" else 4, updates=0 if scenario == "no_updates" else 2)
         if scenario == "no_decision":
             slate["no_update_decisions"] = []
         return ok(json.dumps(slate))
@@ -73,7 +73,8 @@ def script(request: llm.LLMRequest):
         pairs = re.findall(r'"title": "([^"]+)",\s*"bottom_line": "[^"]*",\s*"confidence": "[^"]*",\s*"group": "[^"]*",\s*"story_id": "[^"]*",\s*"region": "[^"]*",\s*"taxa": "[^"]*",\s*"part": "([^"]*)"', request.prompt)
         if not pairs:
             pairs = [(t, "") for t in re.findall(r'"title": "([^"]+)"', request.prompt)]
-        body = " ".join(f"Sentence {i} describes how the day's developments connect across sections." for i in range(70))
+        tags = [f"{a}{b}" for a in "abcdefghijklmnopqrstuvwxyz" for b in "xyz"][:70]  # letters, not figures: the header gate checks every figure against the articles
+        body = " ".join(f"Sentence {tag} describes how the day's developments connect across sections." for tag in tags)
         refs = "\n".join(f'- Force {i + 1} links these stories. Cross-reference: {part + " - " if part else ""}"{title}"'
                          for i, (title, part) in enumerate(pairs[:3]))
         return ok(f"## Executive Summary\n\n{body}\n\n### Top 3 Structural Forces\n\n{refs}\n")

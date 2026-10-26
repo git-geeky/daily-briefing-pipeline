@@ -77,6 +77,20 @@ class CombineTests(unittest.TestCase):
         first = summary["parts"][0]["first_page"]
         self.assertIn("ANIMAL body page 1", reader.pages[first - 1].extract_text())
 
+    def test_an_index_that_only_just_spills_over_is_shrunk_to_one_page(self) -> None:
+        """Found in the fifth live run: two titles and the footnote sat alone on a second index page."""
+        def parts(count: int) -> list:
+            return [merge.Part("Animal", self.animal, titles=[f"Article title number {i} with some extra words" for i in range(count)]),
+                    merge.Part("Daily", self.daily, titles=[f"Daily title {i}" for i in range(8)])]
+
+        def full_size_pages(count: int) -> int:
+            return merge._build_index(self.dir / "probe.pdf", parts(count), [4, 6], 1, heading="H", date_human="D", footnote="Footnote.")
+
+        count = next(n for n in range(20, 120) if full_size_pages(n) == 2)  # the first length that overflows at full size
+        summary = merge.combine_pdfs(parts(count), self.dir / "fit.pdf", heading="H", date_human="D", footnote="Footnote.")
+        self.assertEqual(summary["index_pages"], 1)
+        self.assertEqual(summary["parts"][0]["first_page"], 2)
+
     def test_an_unreadable_part_is_an_error_not_a_silent_omission(self) -> None:
         (self.dir / "broken.pdf").write_bytes(b"not a pdf at all")
         with self.assertRaises(ValueError) as caught:

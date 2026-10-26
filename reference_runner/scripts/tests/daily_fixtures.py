@@ -46,8 +46,8 @@ def make_daily_article(story: dict[str, Any], section: str, *, words: int = 1600
     return "\n".join(parts) + "\n"
 
 
-def make_daily_slate(*, part4: int = 4) -> dict[str, Any]:
-    counts = {"part1": 6, "part2": 9, "part3": 4, "part4": part4, "humaninterest": 2, "updates": 2}
+def make_daily_slate(*, part4: int = 4, updates: int = 2) -> dict[str, Any]:
+    counts = {"part1": 6, "part2": 9, "part3": 4, "part4": part4, "humaninterest": 2, "updates": updates}
     stories: list[dict[str, Any]] = []
     rank = 0
     for section, n in counts.items():

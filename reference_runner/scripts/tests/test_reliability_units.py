@@ -401,6 +401,64 @@ class FillGateTests(unittest.TestCase):
         self.assertEqual({d["entry"] for d in report.dropped}, {"a", "b", "d"})
 
 
+class SkipMemoryTests(unittest.TestCase):
+    """Found in the fifth live run: a story skipped the previous day was proposed again, with nothing new to say about it."""
+
+    def conductor(self, tmp: str, date: str):
+        c = cc.Conductor.__new__(cc.Conductor)
+        c.date = date
+        c.edition = types.SimpleNamespace(edition_id="animal")
+        c.paths = types.SimpleNamespace(research_vault_dir=lambda: Path(tmp))
+        c.log = lambda message: None
+        return c
+
+    def test_a_skip_is_remembered_for_ten_days_but_not_on_the_day_it_happened(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            first = self.conductor(tmp, "2026-10-26")
+            first._remember_skip("deep-sea-siphonophores", "Two new deep-sea siphonophore species described", "SKIP: sources do not support the angle")
+            self.assertEqual(first.recent_skip_titles(), [], "the same day's skips are not 'prior' titles")
+            next_day = self.conductor(tmp, "2026-10-27")
+            self.assertEqual(next_day.recent_skip_titles(), ["Two new deep-sea siphonophore species described"])
+            later = self.conductor(tmp, "2026-11-08")
+            self.assertEqual(later.recent_skip_titles(), [], "after ten days the story may come back")
+
+    def test_remembering_the_same_story_twice_keeps_one_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self.conductor(tmp, "2026-10-26")
+            c._remember_skip("a", "Story A title", "reason one")
+            c._remember_skip("a", "Story A title", "reason two")
+            records = json.loads((Path(tmp) / "recent-skips-animal.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["reason"], "reason two")
+
+
+class ReserveSlackTests(unittest.TestCase):
+    def conductor(self, kept: int):
+        c = cc.Conductor.__new__(cc.Conductor)
+        c.settings = {"slate_reserves": 8, "slate_reserve_slack": 2, "fill_sections": {}, "article_sections": ["animals"],
+                      "article_section": "animals"}
+        c.edition = types.SimpleNamespace(section_titles={"animals": "A"}, rule=lambda key: {"target_count": 10, "min_count": 3, "max_count": 12})
+        c.article_section = "animals"
+        c.calls = []
+        c.past_deadline = lambda: False
+        c.log = lambda message: None
+        c.call = lambda *a, **k: c.calls.append("slate") or backend.LLMResult(ok=False)
+        c.prompt = lambda *a, **k: ""
+        report = types.SimpleNamespace(kept=[{"story_id": f"s{i}", "title": f"T{i}", "section": "animals"} for i in range(kept)], dropped=[])
+        return c, report
+
+    def test_one_or_two_reserves_short_does_not_buy_a_second_slate_call(self) -> None:
+        for kept in (18, 17, 16):
+            c, report = self.conductor(kept)
+            c._top_up_reserves(report, {"SPEC": ""}, [], lambda text: [], c.plan(), False)
+            self.assertEqual(c.calls, [], f"{kept} of 18 wanted")
+
+    def test_three_short_asks_once(self) -> None:
+        c, report = self.conductor(15)
+        c._top_up_reserves(report, {"SPEC": ""}, [], lambda text: [], c.plan(), False)
+        self.assertEqual(c.calls, ["slate"])
+
+
 class LockRebootTests(unittest.TestCase):
     def test_a_lock_written_before_a_reboot_is_dead_even_if_its_pid_now_belongs_to_another_process(self) -> None:
         boot = cc.boot_epoch()
@@ -423,3 +481,36 @@ class LockRebootTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VerificationNoteTests(unittest.TestCase):
+    """Found in the fifth live run: the editor's note named ten of twenty daily stories by slug."""
+
+    def note(self, flagged: list[dict]) -> list[str]:
+        c = cc.Conductor.__new__(cc.Conductor)
+        articles = [{"story": {"story_id": f"s{i}", "title": f"Story {i}"}, "meta": {"flags": ["x"] if item is not None else [], "provenance": item or {}}}
+                    for i, item in enumerate(flagged)]
+        summaries = [{"title": f"Title of story {i}"} for i in range(len(flagged))]
+        return c.verification_notes(articles, summaries)
+
+    def test_nothing_flagged_says_nothing(self) -> None:
+        self.assertEqual(self.note([None, None]), [])
+
+    def test_serious_cases_are_named_by_title_and_the_rest_are_only_counted(self) -> None:
+        notes = self.note([
+            {"unmatched_numbers": [{"text": "1"}, {"text": "2"}, {"text": "3"}]},     # three figures
+            {"unmatched_numbers": [{"text": "1"}]},                                  # a stray figure
+            {"unmatched_quotes": ["a quotation"]},                                   # a quotation
+            {"dois": {"10.1/x": {"status": "not_found"}}},                           # a DOI that does not resolve
+            {"summary_only_quotes": 1},                                              # a quotation resting on a page summary
+            None,
+        ])
+        self.assertEqual(len(notes), 2)
+        self.assertIn("Title of story 0; Title of story 2; Title of story 3", notes[0])
+        self.assertNotIn("s0", notes[0])
+        self.assertNotIn("Title of story 1", notes[0])
+        self.assertEqual(notes[1], "2 more stories rest partly on summaries of pages or carry a stray unverified figure")
+
+    def test_a_single_mild_case_reads_in_the_singular(self) -> None:
+        self.assertEqual(self.note([{"unmatched_numbers": [{"text": "1"}]}]),
+                         ["1 more story rests partly on summaries of pages or carries a stray unverified figure"])

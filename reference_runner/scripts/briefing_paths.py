@@ -41,19 +41,16 @@ def artifact_stem() -> str:
     return runner_context().profile.artifact_stem
 
 
-# These three must come from the *resolved* profile: the default profile ignores the edition
-# (animal) and the DAILY_BRIEFING_LABEL/AUTHOR overrides, which put "The Daily Intelligence
-# Briefing" in the animal PDF's page headers.
 def briefing_label() -> str:
-    return runner_context().profile.briefing_label
+    return _DEFAULT_PROFILE.briefing_label
 
 
 def briefing_author() -> str:
-    return runner_context().profile.briefing_author
+    return _DEFAULT_PROFILE.briefing_author
 
 
 def prepared_by_line() -> str:
-    return runner_context().profile.prepared_by_line
+    return _DEFAULT_PROFILE.prepared_by_line
 
 
 def runner_name() -> str:

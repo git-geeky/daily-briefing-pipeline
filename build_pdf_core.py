@@ -157,9 +157,27 @@ def _optional_text_attr(name: str, default: str) -> str:
     return default
 
 
-BRIEFING_LABEL = _optional_text_attr("briefing_label", "The Daily Intelligence Briefing")
-BRIEFING_AUTHOR = _optional_text_attr("briefing_author", "Intelligence Report")
-PREPARED_BY_LINE = _optional_text_attr("prepared_by_line", "Prepared by Claude")
+def _identity_text(name: str, default: str) -> str:
+    """Document identity from the *resolved* runner profile (edition / env overrides applied).
+
+    The per-runner wrappers' ``briefing_label()`` helpers return their static default profile, so
+    reading those puts "The Daily Intelligence Briefing" on every edition's pages. Every wrapper
+    exposes ``runner_context()``, which is resolved, so prefer it and fall back to the helper.
+    """
+    context_factory = getattr(briefing_paths_module, "runner_context", None)
+    if callable(context_factory):
+        try:
+            value = getattr(context_factory().profile, name, None)
+            if value:
+                return str(value)
+        except Exception:  # noqa: BLE001 - never let identity lookup break a PDF build
+            pass
+    return _optional_text_attr(name, default)
+
+
+BRIEFING_LABEL = _identity_text("briefing_label", "The Daily Intelligence Briefing")
+BRIEFING_AUTHOR = _identity_text("briefing_author", "Intelligence Report")
+PREPARED_BY_LINE = _identity_text("prepared_by_line", "Prepared by Claude")
 briefing_paths_module.ensure_layout()
 MD_PATH = briefing_paths_module.assembled_markdown_path(BRIEFING_DATE)
 PDF_PATH = briefing_paths_module.pdf_path(BRIEFING_DATE)

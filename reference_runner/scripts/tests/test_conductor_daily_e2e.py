@@ -76,6 +76,24 @@ class DailyConductorTests(unittest.TestCase):
         self.assertIn("the filing itself could not be checked", result["assembled_text"])
         self.assertNotIn("HTTP 429", result["assembled_text"])
 
+    def test_a_thin_sourcing_finding_tells_the_repair_writer_what_is_missing(self) -> None:
+        """Sixth live run: five daily articles failed three attempts on the bare words "thin sourcing requires a second corroboration pass"."""
+        result = run_daily("thin_anchor", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        finding = next(f for f in result["repair_findings"] if "thin sourcing" in f)
+        self.assertIn("distinct domain(s)", finding)
+        self.assertIn("source class(es)", finding)
+        self.assertIn("at least 5 distinct domains or 3 source classes", finding)
+        self.assertIn("part1-story-3", result["articles_done"])
+
+    def test_a_header_over_its_word_limit_is_asked_for_again_before_the_fallback_is_used(self) -> None:
+        """Sixth live run: a header of 844 words against a limit of 800 meant the fallback header."""
+        result = run_daily("header_too_long", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertEqual(result["calls"]["header"], 2)
+        self.assertEqual(result["header_source"], "model")
+        self.assertTrue(any("asking once more" in e for e in result["events"]))
+
     def test_a_day_with_no_updates_shows_no_empty_updates_heading(self) -> None:
         """Found in the fifth live run: an empty "PART VI - UPDATES" heading sat directly above the closing analysis."""
         result = run_daily("no_updates", self.fresh())

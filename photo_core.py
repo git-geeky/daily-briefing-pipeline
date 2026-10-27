@@ -464,6 +464,8 @@ class RequestsFetcher:
         self.timeout, self.retries, self._sleep, self._clock = timeout, retries, sleep, clock
         self._next_slot: dict[str, float] = {}
         self._lock = threading.Lock()
+        self._requests_by_host: dict[str, int] = {}
+        self._waits = {"spacing_s": 0.0, "retry_s": 0.0, "retries": 0}   # where the stage's time goes (summed over threads)
 
     def _space(self, url: str) -> None:
         """At least MIN_INTERVAL_SECONDS between requests to one host, however many threads ask: each caller reserves the next free slot
@@ -473,8 +475,23 @@ class RequestsFetcher:
             now = self._clock()
             slot = max(now, self._next_slot.get(host, now))
             self._next_slot[host] = slot + self.MIN_INTERVAL_SECONDS
+            self._requests_by_host[host] = self._requests_by_host.get(host, 0) + 1
+            self._waits["spacing_s"] += max(0.0, slot - now)
         if slot - now > 0:
             self._sleep(slot - now)
+
+    def _wait_for_retry(self, seconds: float) -> None:
+        with self._lock:
+            self._waits["retry_s"] += seconds
+            self._waits["retries"] += 1
+        self._sleep(seconds)
+
+    def summary(self) -> dict[str, Any]:
+        """Requests per host and the seconds spent waiting (per-host spacing and retries, summed over threads), for the stage's log line."""
+        with self._lock:
+            hosts = sorted(self._requests_by_host.items(), key=lambda kv: -kv[1])
+            return {"requests": sum(self._requests_by_host.values()), "top_hosts": dict(hosts[:4]), "retries": self._waits["retries"],
+                    "retry_wait_s": round(self._waits["retry_s"]), "spacing_wait_s": round(self._waits["spacing_s"])}
 
     def _get(self, url: str, params: dict[str, Any] | None = None):
         last: Exception | None = None
@@ -485,7 +502,7 @@ class RequestsFetcher:
                 if response.status_code in (429, 500, 502, 503, 504) and attempt < self.retries:
                     retry_after = response.headers.get("Retry-After", "")
                     delay = float(retry_after) if retry_after.isdigit() else 2 ** attempt * 3
-                    self._sleep(min(delay, self.MAX_RETRY_AFTER_SECONDS))
+                    self._wait_for_retry(min(delay, self.MAX_RETRY_AFTER_SECONDS))
                     continue
                 response.raise_for_status()
                 return response
@@ -494,7 +511,7 @@ class RequestsFetcher:
             except self._requests.RequestException as exc:
                 last = exc
                 if attempt < self.retries:
-                    self._sleep(2 ** attempt * 2)
+                    self._wait_for_retry(2 ** attempt * 2)
         raise RuntimeError(f"GET {url} failed: {last!r}")
 
     def get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:

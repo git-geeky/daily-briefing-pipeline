@@ -104,6 +104,7 @@ class ProvenanceReport:
             or len(self.summary_only_quotes) >= max(1, self.summary_only_limit)
             or (self.numbers_checked >= 8 and self.unmatched_ratio > max_ratio)
             or (self.numbers_checked >= 3 and unmatched >= 3 and self.unmatched_ratio > 0.5)  # a short article of invented figures
+            or (unmatched >= 8 and self.unmatched_ratio > 0.12)  # a table's worth of figures the writer could not show it read (live run: 17 of 94)
             or unmatched > max_unmatched
         )
 

@@ -159,7 +159,8 @@
     "focus_beat_required": true,
     "hn_target": 5,
     "min_assembled_bytes": 102400,
-    "native_language_audit": true
+    "native_language_audit": true,
+    "forbid_first_person": true
   },
   "banned_topic_labels": null,
   "technical_keywords": [

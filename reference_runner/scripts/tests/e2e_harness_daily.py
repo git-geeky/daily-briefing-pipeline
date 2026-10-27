@@ -73,6 +73,10 @@ def script(request: llm.LLMRequest):
             if scenario == "unread_caveat_kept":  # the repair keeps one caveat attached to a specific second-hand figure
                 caveat = "Reuters, citing the filing, put the figure at 4 billion dollars; the filing itself could not be checked."
                 return ok(text.replace("On 2026-10-26 officials confirmed", caveat + " On 2026-10-26 officials confirmed", 1))
+        if scenario == "thin_anchor" and stage == "article" and story["story_id"] == "part1-story-3":
+            head, _, tail = text.partition("### Primary Sources")
+            kept = [line for line in tail.splitlines() if not line.startswith("- ") or "reuters.com" in line or "whitehouse.gov" in line]
+            text = head + "### Primary Sources" + "\n".join(kept) + "\n"  # one wire and one agency page: a single anchor, two domains
         if scenario == "single_counterpoint_row" and stage == "article" and story["story_id"] == "part1-story-1":
             text = "\n".join(line for line in text.splitlines() if not line.startswith("| The change is temporary"))
         return ok(text)
@@ -82,6 +86,8 @@ def script(request: llm.LLMRequest):
             pairs = [(t, "") for t in re.findall(r'"title": "([^"]+)"', request.prompt)]
         tags = [f"{a}{b}" for a in "abcdefghijklmnopqrstuvwxyz" for b in "xyz"][:70]  # letters, not figures: the header gate checks every figure against the articles
         body = " ".join(f"Sentence {tag} describes how the day's developments connect across sections." for tag in tags)
+        if scenario == "header_too_long" and calls["header"] == 1:
+            body += " " + " ".join(f"Additional sentence {tag} repeats how the developments connect." for tag in tags)  # well over the word limit
         refs = "\n".join(f'- Force {i + 1} links these stories. Cross-reference: {part + " - " if part else ""}"{title}"'
                          for i, (title, part) in enumerate(pairs[:3]))
         return ok(f"## Executive Summary\n\n{body}\n\n### Top 3 Structural Forces\n\n{refs}\n")

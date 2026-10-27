@@ -234,15 +234,22 @@ class RequestsFetcherTests(unittest.TestCase):
         self.assertIn(7.0, sleeps)
         self.assertIn(photo_core.RequestsFetcher.MAX_RETRY_AFTER_SECONDS, sleeps)
 
+    def test_the_fetcher_reports_where_its_time_went(self) -> None:
+        fetcher, sleeps = self.make([self.Resp(429, {"Retry-After": "7"}), self.Resp(200, payload={"ok": 1}), self.Resp(200, payload={"ok": 2})])
+        fetcher.get_json("https://commons.example/api")
+        fetcher.get_json("https://commons.example/api")   # the same host again: spaced by the clock slot, one second after the first
+        summary = fetcher.summary()
+        self.assertEqual(summary["requests"], 3)
+        self.assertEqual(summary["top_hosts"], {"commons.example": 3})
+        self.assertEqual((summary["retries"], summary["retry_wait_s"]), (1, 7))
+        self.assertGreater(summary["spacing_wait_s"], 0)
+
     def test_gives_up_with_a_clear_error_after_retries(self) -> None:
         fetcher, _ = self.make([self.Resp(503)] * 5)
         with self.assertRaises(RuntimeError) as caught:
             fetcher.get_json("https://commons.example/api")
         self.assertIn("failed", str(caught.exception))
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 class ParallelPhotoTests(unittest.TestCase):
     """Found in the fifth live run: the photo stage took 16 minutes, strictly one request at a time."""
@@ -288,3 +295,6 @@ class ParallelPhotoTests(unittest.TestCase):
         for sid, lines in report["_outcomes"].items():
             self.assertEqual(len(lines), per_story[sid], "the markdown lines follow the photographs that were kept")
 
+
+if __name__ == "__main__":
+    unittest.main()

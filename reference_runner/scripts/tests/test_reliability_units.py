@@ -351,6 +351,33 @@ class QualityMetricsTests(unittest.TestCase):
         self.assertEqual(record["cost_usd"], 4.57)
 
 
+class SettingOverrideTests(unittest.TestCase):
+    """`--set` lets one run use another model (or any setting) without editing the edition file."""
+
+    KNOWN = {"models": {"slate": {"model": "opus", "effort": "medium"}, "article": {"model": "sonnet", "effort": "medium"}}, "slate_candidates": 14}
+
+    def test_dotted_paths_become_nested_values_and_json_is_read(self) -> None:
+        out = cc.parse_overrides(["models.slate.model=claude-fable-5-1", "slate_candidates=20", "models.article.effort=\"high\"", "fill_blocklist="] , {**self.KNOWN, "fill_blocklist": ""})
+        self.assertEqual(out, {"models": {"slate": {"model": "claude-fable-5-1"}, "article": {"effort": "high"}}, "slate_candidates": 20, "fill_blocklist": ""})
+
+    def test_a_nested_override_keeps_the_sibling_settings(self) -> None:
+        settings = {"models": {"slate": {"model": "opus", "effort": "medium"}}, "x": 1}
+        cc.deep_update(settings, {"models": {"slate": {"model": "claude-fable-5-1"}}})
+        self.assertEqual(settings["models"]["slate"], {"model": "claude-fable-5-1", "effort": "medium"})
+
+    def test_a_typo_or_a_missing_equals_sign_is_an_error(self) -> None:
+        with self.assertRaises(ValueError):
+            cc.parse_overrides(["modles.slate.model=x"], self.KNOWN)
+        with self.assertRaises(ValueError):
+            cc.parse_overrides(["slate_candidates"], self.KNOWN)
+
+    def test_the_cli_reports_a_bad_override_as_a_usage_error(self) -> None:
+        from unittest import mock
+
+        with mock.patch.dict(os.environ):  # main() selects the edition through the environment: do not leak that into other tests
+            self.assertEqual(cc.main(["--edition", "animal", "--set", "nonsense=1", "--diagnose"]), cc.EXIT_USAGE)
+
+
 class SlateMetricsTests(unittest.TestCase):
     def test_the_record_names_the_slate_model_and_how_many_selected_stories_were_published(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

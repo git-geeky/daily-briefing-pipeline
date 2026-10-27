@@ -204,8 +204,17 @@ def _collapse(text: str) -> str:
 
 def html_to_text(html: bytes | str) -> tuple[str, list[str], str]:
     """Return ``(title, meta_lines, main_text)``. Tables become pipe rows; navigation, scripts and footers are dropped."""
+    import warnings
+
     from bs4 import BeautifulSoup, NavigableString
 
+    try:
+        from bs4 import XMLParsedAsHTMLWarning
+
+        # A feed or sitemap among a story's sources is read as text on purpose; the warning only fills the run log (seen in live runs).
+        warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+    except ImportError:  # an older bs4 has no such warning
+        pass
     try:
         soup = BeautifulSoup(html, "lxml")
     except Exception:  # noqa: BLE001 - lxml missing or choking: the stdlib parser is enough

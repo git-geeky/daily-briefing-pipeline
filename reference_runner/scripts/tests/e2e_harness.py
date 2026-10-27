@@ -107,6 +107,10 @@ def script(request: llm.LLMRequest):
             "story_id": re.search(r"<!-- story: ([a-z0-9-]+)", request.prompt.split("# Current article")[1]).group(1),
             "title": re.search(r"(?m)^## (.+)$", request.prompt.split("# Current article")[1]).group(1), "prior_story_id": None}
         sid = story["story_id"]
+        if scenario in {"quick_skip", "quick_skip_still"} and stage == "article" and sid == "fixture-story-2":
+            first = "Instruction from the editor (second attempt)" not in request.prompt
+            if first or scenario == "quick_skip_still":  # the first attempt gives up having opened nothing (web_requests stays 0)
+                return result_for("SKIP: low_confidence")
         if scenario == "unread_mention" and stage == "article" and sid == "fixture-story-2":
             clean = clean_for(story)
             return result_for(clean.replace("### The evidence\n", "### The evidence\n\nThe full text was not read, so the model details are not described here.\n", 1), corpus=clean)
@@ -232,6 +236,8 @@ if scenario in {"dossier", "dossier_quote", "taxonomy_typo"}:
     web_fetcher = FakeGbifWeb({f"https://example.org/{kind}-{i}": html_bytes(page) for i in range(14) for kind in ("paper", "agency")})
 
 settings = {"slate_reserves": 4 if scenario == "slate_topup" else 3, "review_enabled": True, "models": {"review": {"model": "opus", "effort": "low", "optional": True}}}
+if scenario.startswith("quick_skip"):
+    settings["recheck_quick_skip"] = True
 if not scenario.startswith("low_conf"):
     settings["article_min_total"] = 6  # the deferral and deadline scenarios are written around a six-article minimum; the edition's own is 3
 conductor = cc.Conductor(
@@ -281,6 +287,7 @@ out = {
     "email_files": sorted(p.name for p in gen.glob("*-email.*")),
     "digest_tools": digest_tools,
     "article_prompts": prompts.get("article", [])[:3],
+    "recheck_prompts": [p for p in prompts.get("article", []) if "Instruction from the editor (second attempt)" in p],
     "dossier_files": sorted(p.name for p in conductor.articles_dir.glob("*.dossier*.json")),
     "taxonomy_meta": json.loads((conductor.articles_dir / "fixture-story-2.json").read_text()).get("provenance", {}).get("taxonomy")
     if (conductor.articles_dir / "fixture-story-2.json").exists() else None,

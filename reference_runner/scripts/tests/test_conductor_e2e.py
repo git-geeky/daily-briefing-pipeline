@@ -314,6 +314,21 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertIn("The full text was not read", prompt)
         self.assertNotIn("was not read", result["assembled_text"])
 
+    def test_a_skip_after_opening_nothing_is_asked_once_more_and_the_second_attempt_can_write_it(self) -> None:
+        """Sixth live run: the slate's top story was skipped in 16 s by Sonnet; Opus and Fable wrote it at Medium confidence."""
+        result = run_harness("quick_skip", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertIn("fixture-story-2", result["articles_done"])
+        self.assertEqual(len(result["recheck_prompts"]), 1)
+        self.assertIn("SKIP: low_confidence", result["recheck_prompts"][0])
+        self.assertTrue(any("skipped after opening" in e for e in result["events"]))
+
+    def test_a_second_skip_stands_and_a_third_attempt_is_never_bought(self) -> None:
+        result = run_harness("quick_skip_still", self.fresh())
+        self.assertNotIn("fixture-story-2", result["articles_done"])
+        self.assertEqual(len(result["recheck_prompts"]), 1)
+        self.assertEqual(len([e for e in result["events"] if "skipped after opening" in e]), 1)
+
     def test_a_misspelt_binomial_is_caught_by_the_gbif_lookup_and_repaired(self) -> None:
         result = run_harness("taxonomy_typo", self.fresh())
         self.assertEqual(result["exit"], 0, result["events"])

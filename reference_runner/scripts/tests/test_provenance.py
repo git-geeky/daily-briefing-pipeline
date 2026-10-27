@@ -454,3 +454,23 @@ class WeakCueArithmeticTests(unittest.TestCase):
     def test_without_any_comparison_wording_the_figure_stays_unverified(self) -> None:
         report = self.check("Smith won 54.2 million votes and Jones 49.8 million, and 4.4 million people stayed away.")
         self.assertEqual([n["text"] for n in report.unmatched_numbers], ["4.4 million"])
+
+
+class RepairThresholdTests(unittest.TestCase):
+    """Fifth/sixth live runs: an article shipped with 17 of 94 figures unverified and no repair, because no single threshold was crossed."""
+
+    def report(self, checked: int, unmatched: int):
+        r = prov.ProvenanceReport()
+        r.numbers_checked = checked
+        r.numbers_matched = checked - unmatched
+        r.unmatched_numbers = [{"text": str(i), "context": ""} for i in range(unmatched)]
+        return r
+
+    def test_a_table_worth_of_unverified_figures_is_sent_for_repair(self) -> None:
+        self.assertTrue(self.report(94, 17).needs_repair())
+        self.assertTrue(self.report(40, 8).needs_repair())
+
+    def test_a_few_stray_figures_in_a_long_article_are_still_only_reported(self) -> None:
+        self.assertFalse(self.report(94, 7).needs_repair())
+        self.assertFalse(self.report(200, 15).needs_repair())  # 7.5%: under the ratio
+        self.assertTrue(self.report(94, 7).reader_should_be_told())

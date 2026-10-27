@@ -171,7 +171,7 @@ Extrapolation for a full animal run (measured before the Sonnet defaults; the sl
 
 ## 6. What was and was not verified
 
-**Verified in the build environment** (cloud Linux, real `claude` CLI, real network, no email sent, no Windows desktop, no aiserver): 513 automated tests in the reference runner (67 skipped by design) and 4 in the shared-core suite, including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; and **five full live runs** on 2026-10-26 (the fifth was the combined path):
+**Verified in the build environment** (cloud Linux, real `claude` CLI, real network, no email sent, no Windows desktop, no aiserver): 524 automated tests in the reference runner (67 skipped by design) and 4 in the shared-core suite, including end-to-end runs of both editions through the real assemble, validate, PDF and QA scripts against a scripted model; and **five full live runs** on 2026-10-26 (the fifth was the combined path):
 
 | Run | What happened | Cost (API-equivalent) |
 |---|---|---|
@@ -214,6 +214,29 @@ Same fresh source audit and ingest per edition (animal: 245 candidates from 51 s
 * **Recommendation:** use Fable 5.1 for the animal slate (`conductor.models.slate.model` in `editions/animal.json`, Opus stays the refusal fallback) and keep Opus for the daily slate. This is a recommendation, not applied: it adds $1.9 to $2.3 of usage per animal run. Two days is a small sample; every run now records `slate_model` and `slate_selected_published` in `quality-history.jsonl`, so a week of real runs shows which slate's stories actually reach publication.
 
 Defects found by the comparison, all fixed: balance swaps could import a `thin` story to satisfy "three native-language stories" or "two outside the West" (the spec says "when material exists"); a region such as "global (Max Planck Institute...)" counted as outside the West; unresolved placeholders ("confirm study population", "DOI must be traced") reached the writers (the story is now marked `thin` and the log says so); the region field must be one place name; a daily title must not carry Hacker News points or comment counts; the article prompt now tells the writer the slate's `taxa` and the dossier's registry facts are a guess; `fontTools` was missing, so text from PDFs with embedded CFF fonts could be garbled (it is now in `requirements.txt`; run `pip install -r requirements.txt` on the desktop).
+
+### Writer model comparison: Sonnet 5.5, Opus 5.5 and Fable 5.1 (sixth live run, 2026-10-27)
+
+The sixth live run was the combined path (animal slate on Fable by `--set models.slate.model=claude-fable-5-1`, daily slate on Opus, Sonnet writers: the baseline). It finished with 10 animal articles (3 skipped), 20 daily articles (5 failed, 3 skipped), a 147-page combined PDF, $8.88 + $11.28. Afterwards three stories per edition (chosen to include stories Sonnet skipped or failed) were rewritten by Opus and by Fable from the same slate and the same cached source dossiers; only `models.article` changed (repairs stay on Sonnet). Three blind judges (one each of Sonnet, Opus and Fable, so no judge model is favoured) ranked the versions per story; the letters were re-randomised per story and mapped back afterwards.
+
+| | Sonnet | Opus | Fable |
+|---|---|---|---|
+| Animal: stories written / 3 | 2 (one skipped as low confidence after 16 s) | 3 | 3 |
+| Animal: words | 2,524 and 3,259 | 4,095, 4,074, 4,504 | 3,571, 4,462, 4,350 |
+| Animal: cost per article, with repairs | $0.29, $0.45 | $1.66, $1.65, $1.06 | $3.29, $3.64, $3.06 |
+| Animal: per-story rank by the three judges | last in every story it wrote | first in 2 of 3 | first in 1 of 3 |
+| Daily: stories written / 3 | 1 (one failed thin sourcing, one skipped) | 3 | 3 |
+| Daily: cost per article | $0.53, $0.21, $0.61 | $0.85, $0.93, $1.24 | $2.24, $2.69, $2.62 |
+| Daily: per-story rank (all three judges agreed on every story) | last | second | first |
+
+* **Sonnet is clearly the weakest writer**: shorter (the aim is 3,500 words on animal), more first-person and process talk, thinner literature sections, and it gave up quickly on stories the others wrote at Medium confidence. Opus and Fable both wrote every story Sonnet failed or skipped.
+* **Animal: Opus and Fable are close**; no consistent gap, Fable costs about 2.2 times as much. **Daily: Fable led on all three stories**, at about 2.5 times Opus.
+* **Re-asking Sonnet does not rescue a quick skip** (second attempt: 24 s, SKIP again). Re-asking with Opus did for the slate's top animal story ($1.55 with repairs) and not for a second (written, then failed the gate). `recheck_quick_skip` and `recheck_model` implement this (default off).
+* **Estimated daily cost by writer** (API-equivalent, from the per-article figures above): Sonnet about $20 (what the run cost), Opus about $40 to $42, Fable about $85. Opus articles take roughly 1.5 to 2 times as long: expect the animal run near 70 to 80 minutes and the daily near 50 to 60.
+* **Recommendation:** Opus writers for both editions (`conductor.models.article.model`), Sonnet for repairs; Fable only for lead stories if it is ever wanted. Not applied: it doubles the day's spend.
+* **Caveats**: three stories per edition; sources seen only through the judges' text; the judges slipped on facts now and then (every claim used here was one several judges agreed on). Stronger writers quote more from web-page summaries (Fable up to 28 summary-only quotations in one article), which the gate flags but ships.
+
+Other defects found in the run and fixed: a table's worth of unverified figures (17 of 94) shipped without a repair (`needs_repair` now triggers at 8 or more unmatched with a ratio above 0.12); the repair finding "thin sourcing requires a second corroboration pass" gave the writer nothing to act on and five daily articles failed three attempts each (it now states the domain count, the source classes and what is needed); the executive summary came back 44 words over its limit and the fallback header was used (one corrective retry now); the daily edition did not enforce the impersonal voice; the photo stage took 12 minutes (its request and wait accounting is now logged to show why); `--set KEY=VALUE` lets a single run use another model or setting.
 
 ### Independent adversarial reviews (three, 2026-10-26)
 

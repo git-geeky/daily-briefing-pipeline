@@ -67,6 +67,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "skip_low_confidence": False,
     # One repair round removes sentences about sources the writer could not open (they must not factor into the article).
     "strip_unread_mentions": False,
+    # A writer that returns SKIP after opening almost nothing (live run: the slate's top story, a Science paper, skipped in 16 s while Opus and
+    # Fable wrote it at Medium confidence) is asked once more, with an instruction to open the full text and the independent sources first.
+    # A model that gives up fast is often just cautious: the second attempt can use a stronger one ("opus"; empty = the same model).
+    "recheck_quick_skip": False, "quick_skip_min_fetches": 3, "recheck_model": "",
     # News: a short caveat attached to one specific figure or claim that is known only second-hand is information the reader needs and stays;
     # every other sentence about the writer's own access still goes (science: all of them go).
     "unread_mentions_keep_load_bearing": False,
@@ -104,6 +108,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # The per-section catalog-source minimum becomes a reported warning instead of a gate (see briefing_manifest_core).
     "section_sources_advisory": False,
 }
+
+RECHECK_NOTE = (
+    "\n\n## Instruction from the editor (second attempt)\nYour first attempt returned SKIP ({reason}) after opening almost nothing beyond this dossier. "
+    "Do not return SKIP yet. Open the full text or the open-access version (publisher page, PMC / Europe PMC, preprint server, the data repository and "
+    "its README or supplement), the agency or registry record, and at least one independent account, then decide. Return SKIP only if, after reading "
+    "them, the central claim is still weakly supported.\n")
 
 NO_DOSSIER = "(the script fetched nothing for this story: research it with WebFetch and WebSearch)"
 
@@ -408,11 +418,7 @@ class Conductor:
         self.photo_fetcher, self.json_fetcher, self.url_checker = photo_fetcher, json_fetcher, url_checker
         self.audit_fixture = audit_fixture
         self.settings = merge_settings(edition)
-        for key, value in (settings_override or {}).items():
-            if isinstance(value, dict) and isinstance(self.settings.get(key), dict):
-                self.settings[key].update(value)
-            else:
-                self.settings[key] = value
+        deep_update(self.settings, settings_override or {})
         advisory = {"BRIEFING_SECTION_SOURCES_ADVISORY": "1"} if self.settings.get("section_sources_advisory") else {}
         os.environ.update(advisory)  # in-process validators; the stage scripts get it through self.env
         self.env = {**os.environ, "BRIEFING_EDITION": edition.edition_id, **advisory, **(env or {})}
@@ -557,8 +563,8 @@ class Conductor:
 
     # ---- model calls -------------------------------------------------------------------
     def call(self, stage: str, prompt: str, *, role: str, tools: list[str] | None, label: str | None = None,
-             budget_usd: float | None = None, timeout_key: str | None = None) -> llm.LLMResult:
-        cfg = self.settings["models"][role]
+             budget_usd: float | None = None, timeout_key: str | None = None, model: str | None = None) -> llm.LLMResult:
+        cfg = {**self.settings["models"][role], **({"model": model} if model else {})}
         timeouts = self.settings["timeouts"]
         refusal_model = self.settings.get("fallback_on_refusal")
         attempt = 0
@@ -1108,11 +1114,15 @@ class Conductor:
         stories += [b for b in slate["backups"][4:] if self.is_fill(b)][: int(self.settings["fill_reserves"])]  # human-interest fill-ins
         image_dir = Path(self.paths.image_cache_dir(self.date))
         fetcher = self.photo_fetcher or photo_core.RequestsFetcher()
+        started = time.time()
         report = photo_core.run_photo_stage(stories, image_dir=image_dir, report_path=image_dir / "image-report.json",
                                             fetcher=fetcher, edition=self.edition, date=self.date)
         atomic_write(image_dir / "photo-lines.json", json.dumps(report.pop("_outcomes"), indent=1, ensure_ascii=False) + "\n")
         self.state.mark("photos", "done", stored=report["total_images"], missing=report["stories_missing_photo"])
-        self.log(f"photos: {report['total_images']} stored; missing for {len(report['stories_missing_photo'])} stories")
+        seconds = round(time.time() - started)
+        usage = fetcher.summary() if hasattr(fetcher, "summary") else {}
+        self.log(f"photos: {report['total_images']} stored; missing for {len(report['stories_missing_photo'])} stories; {seconds} s"
+                 + (f"; requests {usage}" if usage else ""))
 
     def photo_lines(self, story_id: str) -> list[str]:
         lines = load_json(Path(self.paths.image_cache_dir(self.date)) / "photo-lines.json", {})
@@ -1370,6 +1380,24 @@ class Conductor:
             raw = result.text.strip()
             atomic_write(self.articles_dir / f"{sid}.raw.md", raw + "\n")
             skip = tools.skip_reason(raw)
+            if skip and self._quick_skip(skip, result):
+                self.log(f"article {sid}: skipped after opening {max(result.web_requests, len(result.fetched_urls))} page(s) ({skip[:80]}); asking once more with an instruction to read the sources")
+                again = self.call("article", self.prompt("article", {**values, "DOSSIER": values.get("DOSSIER", NO_DOSSIER) + RECHECK_NOTE.format(reason=skip[:160])}, section),
+                                  role="article", tools=["WebFetch", "WebSearch"], label=sid, budget_usd=budget,
+                                  model=str(self.settings.get("recheck_model") or "") or None)
+                outcome.attempts += 1
+                outcome.cost_usd += again.cost_usd
+                if again.ok:
+                    corpus += self._trusted_tool_corpus(again, outcome)
+                    raw = again.text.strip()
+                    atomic_write(self.articles_dir / f"{sid}.raw.md", raw + "\n")
+                    skip = tools.skip_reason(raw)
+                    if not skip:
+                        outcome.flags.append("first attempt skipped without reading the sources; the second attempt wrote it")
+                else:
+                    outcome.reason = f"{again.error_kind}: {again.error_detail[:160]}"
+                    self._save_article_meta(sid, outcome)
+                    return outcome
             if skip:
                 outcome.status, outcome.reason = "skipped", skip[:200]
                 self._save_article_meta(sid, outcome)
@@ -1484,6 +1512,14 @@ class Conductor:
                  f"{', ' + '; '.join(outcome.flags) if outcome.flags else ''})")
         return outcome
 
+    def _quick_skip(self, skip: str, result: Any) -> bool:
+        """True when the writer's SKIP came after it had opened (almost) nothing itself, so it judged the story from the dossier alone."""
+        if not self.settings.get("recheck_quick_skip"):
+            return False
+        if re.match(r"(?i)\s*SKIP:?\s*(?:excluded|cruelty)", skip):
+            return False  # a rule, not a judgement about the evidence
+        return max(int(result.web_requests or 0), len(result.fetched_urls or [])) < int(self.settings.get("quick_skip_min_fetches", 3))
+
     def _skip_low_confidence(self, article: str, sid: str, outcome: ArticleOutcome) -> bool:
         """An article whose own Confidence line says Low (including "Low to medium") is not worth the reader's time: it is dropped and
         the story replaced, never shipped with an apology."""
@@ -1511,8 +1547,10 @@ class Conductor:
             if title:
                 self._remember_skip(sid, title, outcome.reason)
         self.state.mark(f"article:{sid}", outcome.status, words=outcome.words, cost=round(outcome.cost_usd, 3))
-        if outcome.status in {"done", "skipped"}:
-            self.draft_path(sid).unlink(missing_ok=True)  # a terminal failure keeps its draft (and the evidence corpus) for diagnosis
+        if outcome.status in {"done", "skipped"} and not (outcome.status == "done" and outcome.flags):
+            # A terminal failure, or an article shipped with unverified material, keeps its draft (and the evidence corpus): without the
+            # corpus there is no telling afterwards whether a figure was invented or only missing from what was kept.
+            self.draft_path(sid).unlink(missing_ok=True)
 
     # ---- stage: digest -----------------------------------------------------------------
     def stage_digest(self) -> None:
@@ -1660,18 +1698,33 @@ class Conductor:
                     "CROSS_FORMAT": ('Cross-reference: <part> - "<exact article title>" using the story\'s "part" value (for example Cross-reference: Part II - "Title")'
                                      if use_parts else 'Cross-reference: "<exact article title>"'),
                 }
-                result = self.call("header", self.prompt("header", values), role="header", tools=[], label="header")
-                if result.ok:
+                prompt_text = self.prompt("header", values)
+                for attempt in (1, 2):  # a header 5% over its word limit used to mean the fallback header; one corrective retry costs about $0.05
+                    result = self.call("header", prompt_text, role="header", tools=[], label="header")
+                    if not result.ok:
+                        break
                     middle, fixes = tools.repair_cross_references(result.text.strip(), titles)
                     words = len(middle.split(f"### {cross_label}")[0].replace("## Executive Summary", "").split())
                     refs = tools.extract_header_titles(middle)
                     unsupported = self._synthesis_unsupported(middle, articles)
                     if unsupported:
-                        self.log(f"header: model output rejected (not supported by the articles: {unsupported}); using fallback")
+                        why = f"not supported by the articles: {unsupported}"
+                        fix = f"it contains figures or quotations found in no article ({unsupported}); remove them"
                     elif low <= words <= high and len(refs) >= min_cross and all(r in titles for r in refs):
                         header_text = frame(middle)
+                        break
                     else:
-                        self.log(f"header: model output rejected (words={words}, refs={len(refs)}); using fallback")
+                        why = f"words={words}, refs={len(refs)}"
+                        bad = [r for r in refs if r not in titles]
+                        fix = (f"the executive summary was {words} words and must be between {values['SUMMARY_LOW']} and {values['SUMMARY_HIGH']}"
+                               if not low <= words <= high else
+                               f"it needs at least {min_cross} cross-references, each with the exact article title"
+                               + (f" (not found among the titles: {bad[:3]})" if bad else ""))
+                    if attempt == 1:
+                        self.log(f"header: model output rejected ({why}); asking once more")
+                        prompt_text += f"\n\nNOTE: your previous answer was rejected: {fix}. Return the corrected answer in the same format."
+                    else:
+                        self.log(f"header: model output rejected ({why}); using fallback")
             except (Deferred, HumanActionNeeded):
                 self.log("header: model unavailable; using fallback")
         if header_text is None:
@@ -2166,6 +2219,39 @@ def default_scripts_dir() -> Path:
     return _HERE / "reference_runner" / "scripts"
 
 
+def deep_update(target: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+    """Merge ``changes`` into ``target``: nested dicts are merged key by key (an override of ``models.slate.model`` keeps its effort)."""
+    for key, value in changes.items():
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
+            deep_update(target[key], value)
+        else:
+            target[key] = value
+    return target
+
+
+def parse_overrides(pairs: list[str], known: dict[str, Any]) -> dict[str, Any]:
+    """``--set models.slate.model=claude-fable-5-1`` -> {"models": {"slate": {"model": "claude-fable-5-1"}}}. A value is JSON when it parses as
+    JSON (numbers, true/false/null, quoted strings, objects), otherwise a plain string. The first path element must be a real setting, so a typo
+    is an error and not a silent no-op."""
+    out: dict[str, Any] = {}
+    for pair in pairs:
+        key, sep, raw = pair.partition("=")
+        parts = [p for p in key.strip().split(".") if p]
+        if not sep or not parts:
+            raise ValueError(f"--set expects KEY=VALUE (got {pair!r})")
+        if parts[0] not in known:
+            raise ValueError(f"--set: {parts[0]!r} is not a conductor setting")
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError:
+            value = raw
+        node = out
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = value
+    return out
+
+
 def today_in(tz_name: str) -> str:
     return datetime.now(resolve_timezone(tz_name)).strftime("%Y-%m-%d")
 
@@ -2180,6 +2266,9 @@ def main(argv: list[str] | None = None, *, backend: llm.Backend | None = None) -
     parser.add_argument("--finish", action="store_true", help="Watchdog mode: do not draft; assemble and deliver what exists.")
     parser.add_argument("--diagnose", action="store_true", help="Print the run state and exit.")
     parser.add_argument("--audit-fixture", type=Path, default=None, help="Use a source-audit fixture (no network).")
+    parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE", dest="overrides",
+                        help="Override a conductor setting for this run only (dotted path, JSON or plain value), e.g. "
+                             "--set models.slate.model=claude-fable-5-1. Repeatable. Not saved anywhere.")
     parser.add_argument("--deadline", default=None, metavar="HH:MM|none",
                         help="Override the edition's local deadline for this run ('none' removes it; for manual runs started late in the day).")
     args = parser.parse_args(argv)
@@ -2200,6 +2289,11 @@ def main(argv: list[str] | None = None, *, backend: llm.Backend | None = None) -
             print("error: --deadline must be HH:MM or 'none'", file=sys.stderr)
             return EXIT_USAGE
         override["deadline_local"] = None if args.deadline.lower() == "none" else args.deadline
+    try:
+        deep_update(override, parse_overrides(args.overrides, settings))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE
     conductor = Conductor(
         edition=edition, date=date, scripts_dir=scripts_dir, backend=backend or llm.ClaudeBackend(),
         dry_run=args.dry_run, deliver=not args.no_deliver, audit_fixture=args.audit_fixture, settings_override=override,

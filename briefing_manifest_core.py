@@ -856,6 +856,8 @@ def build_item_manifest(
         "mentions_focus_company": mentions_focus_company(f"{title}\n{body}"),
         "native_language_audit": preflight["native_language_audit"],
         "needs_second_pass": needs_second_pass,
+        "source_domain_count": len(distinct_source_domains),
+        "source_class_names": sorted(set(source_classes)),
         "discovery_source": discovery_source,
         "source_audit_source_ids": source_ids,
         "source_check_status": source_check_status,
@@ -1307,13 +1309,13 @@ def evaluate_item_rules(
     if process_leaks:
         blocking.append(
             f"{prefix}: refers to the pipeline's own machinery ({process_leaks[0]!r}); name the source (the paper, the agency page, the "
-            "registry lookup) and state access limits plainly"
+            "registry lookup) and leave out how it reached you; a source you could not open does not appear"
         )
     first_person = item.get("first_person") or []
     if len(first_person) >= 3:
         blocking.append(
             f"{prefix}: written in the first person ({len(first_person)} instances, e.g. {first_person[0]!r}); "
-            "state source-access limits and derived figures impersonally"
+            "state derived figures impersonally (\"computed here from ...\") and leave out any access trouble"
         )
     elif first_person:
         warnings.append(f"{prefix}: uses the first person ({first_person[0]!r})")
@@ -1332,7 +1334,12 @@ def evaluate_item_rules(
     if item["relative_time_mentions"] and not item["has_exact_jst_date"]:
         blocking.append(f"{prefix}: uses relative timing without an exact JST date/time anchor")
     if item["needs_second_pass"]:
-        blocking.append(f"{prefix}: thin sourcing requires a second corroboration pass")
+        # The bare "requires a second corroboration pass" gave the repair writer nothing to act on: five daily articles ran three attempts and failed.
+        blocking.append(
+            f"{prefix}: thin sourcing requires a second corroboration pass: it starts from a single anchor (Hacker News, Reuters, FT or WSJ) and its "
+            f"Primary Sources hold {item.get('source_domain_count', '?')} distinct domain(s) in {len(item.get('source_class_names') or [])} source class(es) "
+            f"({', '.join(item.get('source_class_names') or []) or 'none'}). Open and add independent sources (the primary document, an independent report, "
+            "a practitioner or local source) until Primary Sources have at least 5 distinct domains or 3 source classes, and say in the text what each adds")
     if item["image_quality"]["duplicate_urls"]:
         blocking.append(f"{prefix}: contains duplicate image URLs in a single article")
     if section in HARD_NEWS_SECTIONS and item["image_quality"].get("all_placeholder"):

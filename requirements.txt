@@ -7,6 +7,8 @@ lxml>=5.0,<7
 Pillow>=10.0,<13
 reportlab>=4.0,<6
 pypdf>=4.0,<7
+# pypdf needs fontTools to decode PDFs that embed CFF Type1 fonts (common for journal and agency PDFs); without it their text comes out garbled.
+fonttools>=4.40,<5
 # Windows has no system time-zone database; zoneinfo (Asia/Tokyo deadlines, dates) needs this wheel there.
 tzdata>=2024.1; sys_platform == "win32"
 # Optional (adaptive_fetch TLS impersonation; never auto-installed in unattended runs):

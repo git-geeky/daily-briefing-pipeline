@@ -246,5 +246,12 @@
   "private_overlay": {
     "required": true,
     "covers": "Part IV regional coverage and watch-list beats"
+  },
+  "ingest": {
+    "hacker_news": {
+      "enabled": true,
+      "min_points": 100,
+      "limit": 30
+    }
   }
 }

@@ -351,6 +351,23 @@ class QualityMetricsTests(unittest.TestCase):
         self.assertEqual(record["cost_usd"], 4.57)
 
 
+class SlateMetricsTests(unittest.TestCase):
+    def test_the_record_names_the_slate_model_and_how_many_selected_stories_were_published(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            slate_path = Path(tmp) / "slate.json"
+            slate_path.write_text(json.dumps({"selected": [{"story_id": "a"}, {"story_id": "b"}, {"story_id": "c"}], "backups": [{"story_id": "d"}]}), encoding="utf-8")
+            c = cc.Conductor.__new__(cc.Conductor)
+            c.date = "2026-10-26"
+            c.ctx = types.SimpleNamespace(slate_path=lambda date: str(slate_path))
+            c.settings = {"models": {"slate": {"model": "claude-fable-5-1", "effort": "medium"}}}
+            metrics = c._slate_metrics([{"story": {"story_id": "a"}}, {"story": {"story_id": "d"}}])
+        self.assertEqual(metrics, {"slate_model": "claude-fable-5-1", "slate_selected": 3, "slate_selected_published": 1})
+
+    def test_without_a_slate_file_the_record_is_simply_without_these_fields(self) -> None:
+        c = cc.Conductor.__new__(cc.Conductor)
+        self.assertEqual(c._slate_metrics([]), {})
+
+
 class UnsafeFetchTests(unittest.TestCase):
     """Review SEC-3/T10: a writer steered to a local address must not have what it read counted as evidence."""
 
@@ -514,3 +531,64 @@ class VerificationNoteTests(unittest.TestCase):
     def test_a_single_mild_case_reads_in_the_singular(self) -> None:
         self.assertEqual(self.note([{"unmatched_numbers": [{"text": "1"}]}]),
                          ["1 more story rests partly on summaries of pages or carries a stray unverified figure"])
+
+
+class OptionalSectionTargetTests(unittest.TestCase):
+    """An empty section the edition lets disappear (daily Updates) must not make a quiet day a degraded one."""
+
+    def conductor(self):
+        c = cc.Conductor.__new__(cc.Conductor)
+        rules = {"part1": {"target_count": 5, "min_count": 3}, "updates": {"target_count": 1, "min_count": 0, "omit_when_empty": True}}
+        c.settings = {"article_sections": ["part1", "updates"], "article_section": "part1"}
+        c.edition = types.SimpleNamespace(rule=lambda key: rules[key])
+        return c
+
+    @staticmethod
+    def articles(part1: int, updates: int) -> list[dict]:
+        return [{"story": {"section": "part1"}}] * part1 + [{"story": {"section": "updates"}}] * updates
+
+    def test_an_empty_optional_section_adds_nothing_to_the_target(self) -> None:
+        c = self.conductor()
+        self.assertEqual(c.effective_target(self.articles(5, 0)), 5)
+        self.assertEqual(c.effective_target(self.articles(5, 1)), 6)
+        self.assertEqual(c.total_target(), 6)  # the slate still asks for one
+
+    def test_a_short_required_section_is_still_short(self) -> None:
+        self.assertGreater(self.conductor().effective_target(self.articles(4, 0)), 4)
+
+
+class BurnInRunTests(unittest.TestCase):
+    """A burn-in schedule (--no-deliver) repeats every half hour: today's briefing is built once."""
+
+    def conductor(self, *, deliver: bool, built: bool):
+        c = cc.Conductor.__new__(cc.Conductor)
+        c.settings = {"enabled": True}
+        c.deliver_enabled = deliver
+        c._check_private_overlay = lambda: None
+        c._release_due = lambda: False
+        c.log = lambda message: None
+        stages = {"deliver": {"status": "done", "skipped": True}} if built else {}
+        c.state = types.SimpleNamespace(state={"stages": stages})
+
+        class Reached(Exception):
+            pass
+
+        def acquire():
+            raise Reached()
+
+        c.lock = types.SimpleNamespace(acquire=acquire)
+        return c, Reached
+
+    def test_a_repeat_after_a_no_deliver_build_exits_at_once(self) -> None:
+        c, _ = self.conductor(deliver=False, built=True)
+        self.assertEqual(c.run(), cc.EXIT_OK)
+
+    def test_a_real_send_after_a_no_deliver_build_still_runs(self) -> None:
+        c, reached = self.conductor(deliver=True, built=True)
+        with self.assertRaises(reached):
+            c.run()
+
+    def test_the_first_no_deliver_run_of_the_day_runs(self) -> None:
+        c, reached = self.conductor(deliver=False, built=False)
+        with self.assertRaises(reached):
+            c.run()

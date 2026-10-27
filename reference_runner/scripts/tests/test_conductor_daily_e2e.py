@@ -79,8 +79,9 @@ class DailyConductorTests(unittest.TestCase):
     def test_a_day_with_no_updates_shows_no_empty_updates_heading(self) -> None:
         """Found in the fifth live run: an empty "PART VI - UPDATES" heading sat directly above the closing analysis."""
         result = run_daily("no_updates", self.fresh())
-        self.assertEqual(result["exit"], 10, result["events"])  # delivered, and honest that one story short of target
-        self.assertIn("20 of 21 target stories were finished", result["notes"])
+        self.assertEqual(result["exit"], 0, result["events"])  # an empty Updates section is a valid answer, not a story short of target
+        self.assertEqual([n for n in result["notes"] if "target stories" in n], [])
+        self.assertFalse([w for w in result["validation"]["warnings"] if w.startswith("updates is below target_count")])
         self.assertNotIn("PART VI - UPDATES", result["assembled_text"])
         self.assertIn("# PART V - HUMAN INTEREST", result["assembled_text"])
         self.assertIn("# CLOSING ANALYSIS", result["assembled_text"])

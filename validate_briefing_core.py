@@ -171,10 +171,19 @@ def validate_briefing(
             )
     hn_target = int(EDITION.rules.get("hn_target", 5))
     if hn_target and assembled_manifest["summary"].get("hn_origin_count", 0) < hn_target:
-        warnings.append(
-            f"Briefing includes fewer than {hn_target} Hacker News-driven stories; "
-            "run a second AI/tech discovery pass or record the shortfall explicitly"
+        hn_decision = next(
+            (item for item in candidate_pool.get("no_update_decisions") or []
+             if isinstance(item, dict) and str(item.get("beat")) == "hacker_news" and len(str(item.get("reason") or "").strip()) >= 40),
+            None,
         )
+        if hn_decision:
+            warnings.append(f"Hacker News shortfall recorded ({assembled_manifest['summary'].get('hn_origin_count', 0)} of {hn_target}): "
+                            f"{str(hn_decision['reason']).strip()[:160]}")
+        else:
+            warnings.append(
+                f"Briefing includes fewer than {hn_target} Hacker News-driven stories; "
+                "run a second AI/tech discovery pass or record the shortfall explicitly"
+            )
     min_native_articles = int(EDITION.rules.get("min_native_language_articles", 0) or 0)
     if min_native_articles:
         native_articles = sum(
@@ -268,7 +277,7 @@ def validate_briefing(
                 )
             else:
                 blocking_errors.append(f"{section} article count is {len(real_items)} but minimum is {min_count}")
-        elif len(real_items) < target_count:
+        elif len(real_items) < target_count and not (rules.get("omit_when_empty") and not real_items and not failure_items):
             warnings.append(
                 f"{section} is below target_count under adaptive quota "
                 f"({len(real_items)}/{target_count})"

@@ -462,6 +462,17 @@ class Conductor:
     def total_target(self) -> int:
         return sum(q["target"] for q in self.plan().values())
 
+    def effective_target(self, articles: list[dict[str, Any]]) -> int:
+        """The target the run is judged against. A section the edition lets disappear when empty (daily Updates: "empty is a valid answer")
+        counts only what it holds, so a quiet day is not reported as a story short and does not turn the run into a degraded one."""
+        total = 0
+        for key, quota in self.plan().items():
+            if self.edition.rule(key).get("omit_when_empty"):
+                total += min(quota["target"], sum(1 for a in articles if self.section_of(a["story"]) == key))
+            else:
+                total += quota["target"]
+        return total
+
     def total_min(self) -> int:
         configured = self.settings.get("article_min_total")
         return int(configured) if configured else sum(q["min"] for q in self.plan().values())
@@ -641,6 +652,11 @@ class Conductor:
         elif delivered:
             self.log("already delivered; nothing to do")
             return EXIT_OK
+        built = self.state.state["stages"].get("deliver") or {}
+        if not self.deliver_enabled and not finish_only and built.get("status") == "done" and built.get("skipped"):
+            # A burn-in schedule (--no-deliver) repeats every half hour until the deadline: today's briefing is built once.
+            self.log("a run without delivery already built today's briefing; nothing to do (run without --no-deliver to send it)")
+            return EXIT_OK
         if not self.lock.acquire():
             holder = self.lock.holder()
             self.log(f"another conductor run is active (pid {holder.get('pid')}); exiting")
@@ -746,9 +762,10 @@ class Conductor:
             raise StageFailed("finish", f"only {len(articles)} finished article(s); minimum is {self.total_min()}")
         fill = self.fill_sections()
         primary = [a for a in articles if self.section_of(a["story"]) not in fill]
-        if len(primary) < self.total_target():
+        target = self.effective_target(articles)
+        if len(primary) < target:
             fills = len(articles) - len(primary)
-            notes.append(f"{len(primary)} of {self.total_target()} target stories were finished"
+            notes.append(f"{len(primary)} of {target} target stories were finished"
                          + (f"; {fills} human-interest piece(s) fill the gap" if fills else ""))
         waived = self.state.state["stages"].get("audit", {}).get("waived")
         if waived:
@@ -764,7 +781,7 @@ class Conductor:
         self.stage_pdf()
         notes.extend(self.stage_review(articles))
         combined = self.stage_combine(notes)
-        degraded_run = degraded or len(articles) < self.total_target() or any("dropped" in n for n in notes)
+        degraded_run = degraded or len(articles) < target or any("dropped" in n for n in notes)
         self.stage_deliver(articles, notes, degraded=degraded_run, combined=combined)
         return EXIT_DEGRADED if degraded_run else EXIT_OK
 
@@ -904,6 +921,17 @@ class Conductor:
         ingest = slate_core.build_ingest(
             audit, now=self.now(), prior_titles=self.prior_titles(), keywords=keywords, meta_by_source=meta,
             banned_check=lambda title: briefing_manifest.find_banned_topics(title, ""))
+        hacker_news = self.edition.get("ingest.hacker_news") or {}
+        if hacker_news.get("enabled", True) and hacker_news and self.check_network:
+            hits = slate_core.fetch_hacker_news(self.json_fetcher, min_points=int(hacker_news.get("min_points", 100)),
+                                                limit=int(hacker_news.get("limit", 30)))
+            if hits is None:
+                self.log("ingest: the Hacker News front page could not be read; the harvest goes on without it")
+                ingest["stats"]["hacker_news"] = {"fetched": 0, "error": "unavailable"}
+            else:
+                counts = slate_core.add_hacker_news(ingest, hits, now=self.now(), prior_titles=self.prior_titles(),
+                                                    banned_check=lambda title: briefing_manifest.find_banned_topics(title, ""))
+                self.log(f"ingest: Hacker News front page: {counts['added']} new candidates, {counts['annotated']} already harvested")
         atomic_write(Path(self.ctx.ingest_path(self.date)), json.dumps(ingest, indent=1, ensure_ascii=False) + "\n")
         atomic_write(Path(self.ctx.ingest_markdown_path(self.date)), slate_core.ingest_markdown(ingest, limit=220) + "\n")
         self.state.mark("ingest", "done", **ingest["stats"])
@@ -983,6 +1011,9 @@ class Conductor:
                 self.log(f"slate attempt {attempt}: unusable output ({exc})")
                 continue
             self._gate_fill_entries(report)
+            if report.flagged:
+                self.log(f"slate: {len(report.flagged)} story(ies) still carried a placeholder and were marked thin: "
+                         + "; ".join(f"{f['title'][:50]} ({f['placeholder'][:30]})" for f in report.flagged[:4]))
             if len([e for e in report.kept if e.get("section") not in fill]) >= self.total_min():
                 break
             self.log(f"slate attempt {attempt}: only {len(report.kept)} valid stories")
@@ -1969,7 +2000,20 @@ class Conductor:
             "articles_flagged": sum(1 for m in metas if m.get("flags")), "attempts_total": sum(int(m.get("attempts") or 0) for m in metas),
             "cost_usd": round(float(self.state.state.get("spent_usd", 0.0)), 2), "output_tokens": int(self.state.state.get("output_tokens", 0)),
             "notes": len(self.state.state.get("delivery_notes") or []),
+            **self._slate_metrics(articles),
         }
+
+    def _slate_metrics(self, articles: list[dict[str, Any]]) -> dict[str, Any]:
+        """Which model made the slate and how many of the stories it selected reached publication: the trend that decides which model to
+        use for the slate (the story-level survival of a slate cannot be judged from its text)."""
+        try:
+            slate = load_json(Path(self.ctx.slate_path(self.date)), {}) or {}
+            selected = [str(s.get("story_id")) for s in slate.get("selected", [])]
+            finished = {str(a["story"].get("story_id")) for a in articles}
+            return {"slate_model": str(self.settings["models"]["slate"]["model"]), "slate_selected": len(selected),
+                    "slate_selected_published": sum(1 for sid in selected if sid in finished)}
+        except Exception:  # noqa: BLE001 - a missing slate file or a test double must not stop the record
+            return {}
 
     def _write_quality_metrics(self, articles: list[dict[str, Any]]) -> None:
         try:

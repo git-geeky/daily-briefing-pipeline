@@ -19,10 +19,15 @@
     Even when enabled, the first run is TOMORROW's occurrence: the trigger's start boundary is set to tomorrow, so
     nothing fires today. Pass -AllowToday only when you really want today's occurrence (it is never the default).
 
+    -NoDeliver registers the tasks in burn-in mode: every scheduled run builds the briefing (PDF, combined PDF) and sends nothing, so the first
+    days can be read before anyone receives anything. Re-register without it (same command, -Force semantics) to start sending. The run that
+    finds today's briefing already built exits at once, so the repetitions do not rebuild it.
+
     Tasks are created DISABLED unless -Enable is passed. The legacy \ClaudeCode\Claude-DailyBriefing
     task is left alone (it is disabled); do not enable both.
 
 .EXAMPLE
+    .\Register-BriefingTasks.ps1 -Edition daily -Enable -NoDeliver     # burn-in: builds, sends nothing
     .\Register-BriefingTasks.ps1 -Edition animal -WhatIf
     .\Register-BriefingTasks.ps1 -Edition animal -Enable
 
@@ -37,7 +42,8 @@ param(
     [int]$RepeatMinutes = 30,
     [int]$RepeatHours = 0,
     [switch]$Enable,
-    [switch]$AllowToday
+    [switch]$AllowToday,
+    [switch]$NoDeliver
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,6 +61,7 @@ $vbs = Join-Path $env:USERPROFILE 'bin\run-ps-hidden.vbs'   # same hidden-window
 if (-not (Test-Path -LiteralPath $vbs)) { throw "Hidden launcher shim not found: $vbs" }
 
 function New-BriefingTask([string]$Name, [string]$Arguments, [string]$At, [int]$LimitHours, [switch]$Repeat) {
+    if ($NoDeliver) { $Arguments = "$Arguments -NoDeliver" }
     $action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "`"$vbs`" `"$launcher`" $Arguments"
     $trigger = New-ScheduledTaskTrigger -Daily -At $At
     if (-not $AllowToday) {
@@ -73,7 +80,7 @@ function New-BriefingTask([string]$Name, [string]$Arguments, [string]$At, [int]$
     $first = if ($AllowToday) { 'next occurrence (possibly today)' } else { "tomorrow ($([datetime]::Today.AddDays(1).ToString('yyyy-MM-dd')))" }
     if ($PSCmdlet.ShouldProcess("\Briefing\$Name", "Register ($Arguments at $At; first run $first)")) {
         Register-ScheduledTask -TaskName $Name -TaskPath '\Briefing\' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
-        Write-Host "Registered \Briefing\$Name (enabled: $([bool]$Enable); first run: $first)"
+        Write-Host "Registered \Briefing\$Name (enabled: $([bool]$Enable); first run: $first; delivery: $(if ($NoDeliver) { 'OFF (burn-in, builds only)' } else { 'on' }))"
     }
 }
 

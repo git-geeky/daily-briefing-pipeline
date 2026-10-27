@@ -159,6 +159,73 @@ def build_ingest(
     }
 
 
+HN_SEARCH_URL = "https://hn.algolia.com/api/v1/search"
+
+
+def fetch_hacker_news(fetcher: Any, *, min_points: int = 100, limit: int = 30) -> list[dict[str, Any]] | None:
+    """Today's Hacker News front page (one request to the Algolia mirror): title, the linked article, points, comments and the thread.
+    Returns None when the page cannot be read, so a run says so instead of treating it as an empty day."""
+    try:
+        data = fetcher.get_json(HN_SEARCH_URL, {"tags": "front_page", "hitsPerPage": 60})
+    except Exception:  # noqa: BLE001 - any network or parse failure: the harvest goes on without it
+        return None
+    hits: list[dict[str, Any]] = []
+    for hit in (data or {}).get("hits", []) if isinstance(data, dict) else []:
+        title = re.sub(r"\s+", " ", str(hit.get("title") or "")).strip()
+        points = int(hit.get("points") or 0)
+        object_id = str(hit.get("objectID") or "")
+        if len(title) < 12 or points < min_points or not object_id.isdigit():
+            continue
+        thread = f"https://news.ycombinator.com/item?id={object_id}"
+        try:
+            published = datetime.fromtimestamp(int(hit.get("created_at_i")), timezone.utc).isoformat()
+        except (TypeError, ValueError, OverflowError, OSError):
+            published = ""
+        hits.append({"title": title, "url": str(hit.get("url") or "").strip() or thread, "thread": thread, "points": points,
+                     "comments": int(hit.get("num_comments") or 0), "published": published})
+    hits.sort(key=lambda h: h["points"], reverse=True)
+    return hits[:limit]
+
+
+def add_hacker_news(ingest: dict, hits: list[dict[str, Any]], *, now: datetime, prior_titles: list[str] | None = None,
+                    banned_check: Callable[[str], list[str]] | None = None, max_items: int = 260) -> dict[str, int]:
+    """Fold front-page items into an ingest. A story the harvest already has is annotated with its thread and points (the writer is then
+    told that a community discussion exists and the briefing's HN rule is met); a new one is added as a candidate. The linked article, not
+    the thread, is the candidate's URL; the thread rides along in the source label."""
+    prior_titles = prior_titles or []
+    items = ingest["items"]
+    by_url = {re.sub(r"[?#].*$", "", i["url"]).rstrip("/").lower(): i for i in items}
+    counts = {"fetched": len(hits), "annotated": 0, "added": 0, "dropped_banned": 0}
+    for hit in hits:
+        note = f"HN {hit['points']} points, {hit['comments']} comments; thread {hit['thread']}"
+        norm = re.sub(r"[?#].*$", "", hit["url"]).rstrip("/").lower()
+        twin = by_url.get(norm) or next((i for i in items if _similar(hit["title"], i["title"]) >= 0.8), None)
+        if twin is not None:
+            if "HN " not in twin["source_name"]:
+                twin["source_name"] += f" (also {note})"
+                twin["score"] = round(twin["score"] + 0.7, 2)
+                counts["annotated"] += 1
+            continue
+        if banned_check and banned_check(hit["title"]):
+            counts["dropped_banned"] += 1
+            continue
+        published = _parse_date(hit["published"])
+        age = (now - published).total_seconds() / 86400.0 if published else 99.0
+        score = 1.0 + (2.0 if age <= 3 else 1.0 if age <= 7 else 0.0) + min(hit["points"] / 400.0, 1.5)
+        seen = any(_similar(hit["title"], prior, loose=True) >= 0.55 for prior in prior_titles)
+        if seen:
+            score -= 2.0
+        item = IngestItem("hacker-news", f"Hacker News front page ({note})", "aggregator", "en", "", hit["title"], hit["url"],
+                          hit["published"], round(score, 2), seen)
+        items.append(item.as_dict())
+        by_url[norm] = items[-1]
+        counts["added"] += 1
+    items.sort(key=lambda i: i["score"], reverse=True)
+    del items[max_items:]
+    ingest["stats"].update(hacker_news=counts, kept=len(items), candidates=int(ingest["stats"].get("candidates", 0)) + counts["added"])
+    return counts
+
+
 def ingest_markdown(ingest: dict, *, limit: int | None = None) -> str:
     """Compact digest for the slate prompt: one line per candidate, ids are line numbers."""
     lines = []
@@ -215,6 +282,13 @@ def slugify(text: str, limit: int = 60) -> str:
 class SlateReport:
     kept: list[dict] = field(default_factory=list)
     dropped: list[dict] = field(default_factory=list)
+    flagged: list[dict] = field(default_factory=list)   # kept, but marked thin because the entry still carries a placeholder
+
+
+# What a slate writes when it has not identified the study or the place ("confirm study population", "paper and DOI must be traced").
+_PLACEHOLDER_RE = re.compile(
+    r"(?i)\((?:confirm|tbc|tbd|to be (?:confirmed|identified|traced))[^)]*\)|\bconfirm (?:the )?(?:study|species|population|paper|doi|journal|dates?|figures?|identity)\b"
+    r"|\b(?:must|needs? to|to) be (?:traced|identified|confirmed|verified)\b|\bTBD\b|\?\?")
 
 
 def validate_slate(
@@ -277,6 +351,13 @@ def validate_slate(
             report.dropped.append({"entry": position, "title": title[:100], "reason": "; ".join(reasons)})
             continue
         used.add(story_id)
+        material = str(entry.get("material") or "moderate").lower()
+        material = material if material in MATERIAL_ORDER else "moderate"
+        placeholder = next((m.group(0) for field_name in ("title", "region", "angle", "why_now")
+                            if (m := _PLACEHOLDER_RE.search(str(entry.get(field_name) or "")))), None)
+        if placeholder and material != "thin":
+            material = "thin"
+            report.flagged.append({"story_id": story_id, "title": title[:100], "placeholder": placeholder})
         queries = [str(q).strip() for q in entry.get("photo_queries") or [] if str(q).strip()]
         if not queries:
             queries = [t["scientific"] for t in taxa if t["scientific"]] + [t["common"] for t in taxa if t["common"]]
@@ -285,14 +366,14 @@ def validate_slate(
             "region": str(entry.get("region") or "").strip(), "taxa": taxa, "angle": str(entry.get("angle") or "").strip(),
             "why_now": str(entry.get("why_now") or "").strip(), "novelty": novelty if novelty in {"new", "development"} else "new",
             "prior_story_id": entry.get("prior_story_id") or None,
-            "material": str(entry.get("material") or "moderate").lower() if str(entry.get("material") or "moderate").lower() in MATERIAL_ORDER else "moderate",
-            "sources": sources, "native_language": bool(entry.get("native_language")) or any(
+            "material": material, "sources": sources, "native_language": bool(entry.get("native_language")) or any(
                 str(s.get("lang") or "en").lower() != "en" for s in sources),
             "photo_queries": queries[:4], "photo_allow_words": [str(w) for w in entry.get("photo_allow_words") or []][:4],
         })
     return report
 
 
+_NO_PLACE = re.compile(r"\s*(?:global|worldwide|international|multinational|multiple|various|several|comparative|n/?a|unknown)\b", re.I)
 _WESTERN = re.compile(r"\b(?:united states|usa?|u\.s\.|america|canada|uk|united kingdom|england|scotland|wales|ireland|europe|germany|france|spain|italy|netherlands|sweden|norway|denmark|finland|switzerland|belgium|austria|portugal|poland)\b", re.I)
 
 
@@ -332,11 +413,13 @@ def select_slate(
                 notes.append(f"relaxed group cap to fill slate with {entry['story_id']}")
 
     def non_western(e: dict) -> bool:
-        return bool(e["region"]) and not _WESTERN.search(e["region"])
+        region = e["region"]
+        return bool(region) and not _WESTERN.search(region) and not _NO_PLACE.match(region)
 
     def swap_in(predicate: Callable[[dict], bool], label: str, have: int, need: int) -> None:
         while have < need:
-            candidate = next((e for e in ranked if e not in selected and predicate(e)), None)
+            # A balance rule is "when material exists": a thin story brought in only to satisfy it would end as a low-confidence skip.
+            candidate = next((e for e in ranked if e not in selected and predicate(e) and e["material"] != "thin"), None)
             if candidate is None:
                 notes.append(f"could not meet balance target: {label}")
                 return

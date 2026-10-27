@@ -28,7 +28,8 @@ What each section is for:
 2. The harvest misses things. Use `WebSearch` sparingly (a handful of queries) for large stories it cannot see, preferring wires and primary documents; follow the contract's story-discovery sequence and native-language requirements.
 3. Judge **how much unique, verifiable source material exists** for each story (`material`: `deep`, `moderate`, `thin`). Thin stories belong at the bottom of their section.
 4. Obey the contract's excluded topics and source-curation rules. An **Updates** story must be a development of a story from a recent briefing (`novelty: "development"`, with `prior_story_id` set to that story's slug when known); if nothing moved, leave Updates empty.
-5. Beats with nothing material today (the focus company, watch-list people named in the contract) are **recorded, not padded**: add an entry to `no_update_decisions` with `beat` (for example `focus_company`) and a `reason` of at least 40 characters naming what you checked.
+5. Candidates whose source label names the **Hacker News front page** (with points and a thread URL) show what practitioners are discussing. Use them to find AI and tech developments for Parts II and III; they are a lead and a counterpoint, never the factual spine. Choose the ones that are real, worthwhile developments, open the linked primary article or document, and list that and the thread URL in `sources` (the thread with role `community`). The contract asks for at least five worthwhile Hacker News-driven or corroborated stories when they exist; when fewer clear the bar, say so in a `no_update_decisions` entry with `beat` `hacker_news`.
+6. Beats with nothing material today (the focus company, watch-list people named in the contract) are **recorded, not padded**: add an entry to `no_update_decisions` with `beat` (for example `focus_company`) and a `reason` of at least 40 characters naming what you checked.
 
 # Output
 
@@ -42,17 +43,17 @@ Return **only** a JSON object (no prose, no code fences):
       "title": "Specific working title",
       "section": "part1 | part2 | part3 | part4 | humaninterest | updates",
       "rank": 1,
-      "region": "country or region",
+      "region": "the country or place the story is centred on: one place name; \"global\" only when it truly has no single place",
       "angle": "one or two sentences: the question the article answers",
       "why_now": "what happened, with the JST date",
       "novelty": "new | development",
       "prior_story_id": null,
       "material": "deep | moderate | thin",
-      "sources": [{"url": "https://...", "role": "wire | primary | analysis | local", "lang": "en"}]
+      "sources": [{"url": "https://...", "role": "wire | primary | analysis | local | community", "lang": "en"}]
     }
   ],
   "no_update_decisions": [{"beat": "focus_company", "reason": "..."}]
 }
 ```
 
-Every URL must be one you saw in the candidates or opened yourself. Each story needs at least two source URLs.
+Every URL must be one you saw in the candidates or opened yourself. Each story needs at least two source URLs. A title states the news: never put Hacker News points, comment counts or the word "Hacker News" in it. Leave no placeholders in any field ("confirm ...", "to be traced"): open the page and identify the facts, or mark the story `thin` and rank it last.

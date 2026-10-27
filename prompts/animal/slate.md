@@ -39,7 +39,7 @@ Return **only** a JSON array (no prose, no code fences) of {{SLATE_CANDIDATES}} 
   "title": "Specific working title: what was found, where, in which taxon",
   "rank": 1,
   "group": "mammal | bird | fish_marine | herp | invertebrate | other",
-  "region": "country or region the story is centred on",
+  "region": "the country or place the story is centred on: one place name, never an institution; \"global\" only for a study that is truly worldwide",
   "taxa": [{"common": "...", "scientific": "Genus species"}],
   "angle": "one or two sentences: the question the article will answer",
   "why_now": "what happened, with the date",
@@ -51,4 +51,4 @@ Return **only** a JSON array (no prose, no code fences) of {{SLATE_CANDIDATES}} 
 }
 ```
 
-Every URL must be one you saw in the candidates or opened yourself. Use real scientific names only. `photo_queries` must start with the binomial of the animal that should appear in the photograph.
+Every URL must be one you saw in the candidates or opened yourself. Leave no placeholders in any field ("confirm study population", "DOI must be traced"): open the page and identify the study, or mark the story `thin` and rank it last. Use real scientific names only. `photo_queries` must start with the binomial of the animal that should appear in the photograph.

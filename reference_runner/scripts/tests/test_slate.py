@@ -67,6 +67,71 @@ def entry(story_id, rank, group="mammal", region="Kenya", material="deep", nativ
             "taxa": [{"common": "Thing", "scientific": "Genus species"}], "angle": "angle", **extra}
 
 
+class HackerNewsTests(unittest.TestCase):
+    """The daily briefing's spec asks for Hacker News-driven stories; the conductor's harvest read only the source catalogue."""
+
+    class Fetcher:
+        def __init__(self, hits=None, fail=False):
+            self.hits, self.fail, self.calls = hits or [], fail, []
+
+        def get_json(self, url, params=None):
+            self.calls.append((url, params))
+            if self.fail:
+                raise RuntimeError("503")
+            return {"hits": self.hits}
+
+    @staticmethod
+    def hit(object_id, title, points, url="https://example.org/a", comments=40, created=1_792_990_000):
+        return {"objectID": str(object_id), "title": title, "points": points, "num_comments": comments, "url": url, "created_at_i": created}
+
+    def ingest(self):
+        audit = {"sources": [src("r", "Reuters", [{"title": "Anthropic files S-1 showing a large first-half loss", "url": "https://sec.gov/s1", "published": "2026-10-26"}],
+                                 bucket="PART II - AI NEWS")]}
+        return slate.build_ingest(audit, now=NOW, keywords=())  # the daily edition keeps every headline
+
+    def test_front_page_hits_are_read_ranked_and_filtered_by_points(self) -> None:
+        fetcher = self.Fetcher([self.hit(1, "A short one", 900), self.hit(2, "Postgres 19 ships logical replication of sequences", 150),
+                                self.hit(3, "Rust compiler memory use halved in nightly builds", 640), self.hit(4, "Low points story on a quiet topic", 20),
+                                self.hit(5, "Ask HN: what are you working on this month", 300, url="")])
+        hits = slate.fetch_hacker_news(fetcher, min_points=100, limit=3)
+        self.assertEqual([h["points"] for h in hits], [640, 300, 150])  # 'A short one' is under 12 characters, the 20-point story under the bar
+        self.assertEqual(hits[1]["url"], hits[1]["thread"])  # an Ask HN post has no article: the thread is its own source
+        self.assertEqual(fetcher.calls[0][1]["tags"], "front_page")
+
+    def test_an_unreadable_front_page_is_none_not_an_empty_day(self) -> None:
+        self.assertIsNone(slate.fetch_hacker_news(self.Fetcher(fail=True)))
+
+    def test_a_story_the_harvest_already_has_is_annotated_not_duplicated(self) -> None:
+        ingest = self.ingest()
+        before = ingest["items"][0]["score"]
+        hits = [{"title": "Anthropic S-1 filing", "url": "https://sec.gov/s1/", "thread": "https://news.ycombinator.com/item?id=9", "points": 800,
+                 "comments": 500, "published": "2026-10-26T01:00:00+00:00"}]
+        counts = slate.add_hacker_news(ingest, hits, now=NOW)
+        self.assertEqual((counts["annotated"], counts["added"]), (1, 0))
+        self.assertEqual(len(ingest["items"]), 1)
+        self.assertIn("HN 800 points, 500 comments; thread https://news.ycombinator.com/item?id=9", ingest["items"][0]["source_name"])
+        self.assertGreater(ingest["items"][0]["score"], before)
+
+    def test_a_new_story_becomes_a_candidate_with_the_article_as_its_url_and_the_thread_in_the_label(self) -> None:
+        ingest = self.ingest()
+        hits = [{"title": "Rust compiler memory use halved in nightly builds", "url": "https://blog.rust-lang.org/x", "thread": "https://news.ycombinator.com/item?id=3",
+                 "points": 640, "comments": 210, "published": "2026-10-26T01:00:00+00:00"}]
+        slate.add_hacker_news(ingest, hits, now=NOW)
+        added = next(i for i in ingest["items"] if i["source_id"] == "hacker-news")
+        self.assertEqual(added["url"], "https://blog.rust-lang.org/x")
+        self.assertIn("thread https://news.ycombinator.com/item?id=3", added["source_name"])
+        self.assertEqual(ingest["stats"]["hacker_news"], {"fetched": 1, "annotated": 0, "added": 1, "dropped_banned": 0})
+        self.assertEqual((ingest["stats"]["kept"], ingest["stats"]["candidates"]), (2, 2))  # the counts stay consistent with the list
+        self.assertIn("Hacker News front page (HN 640 points", slate.ingest_markdown(ingest))
+
+    def test_banned_topics_and_repeats_are_handled_like_any_other_candidate(self) -> None:
+        ingest = self.ingest()
+        hits = [{"title": "Celebrity gossip about a streaming series finale", "url": "https://e.org/1", "thread": "https://news.ycombinator.com/item?id=5",
+                 "points": 500, "comments": 5, "published": "2026-10-26T01:00:00+00:00"}]
+        counts = slate.add_hacker_news(ingest, hits, now=NOW, banned_check=lambda title: ["celebrity"] if "gossip" in title else [])
+        self.assertEqual((counts["added"], counts["dropped_banned"]), (0, 1))
+
+
 class ValidateTests(unittest.TestCase):
     def test_drops_bad_entries_with_reasons_and_dedupes_ids(self) -> None:
         raw = [
@@ -158,6 +223,42 @@ class SelectTests(unittest.TestCase):
         selected, _, notes = slate.select_slate(few, target=10, minimum=6, maximum=12)
         self.assertEqual(len(selected), 2)
         self.assertTrue(any("minimum 6" in n for n in notes))
+
+
+class SlateQualityGuardTests(unittest.TestCase):
+    """Found comparing two models on the same candidates: balance swaps imported thin stories, "global" counted as outside the West, and
+    unresolved placeholders ("confirm study population") reached the writers."""
+
+    def test_a_balance_swap_never_brings_in_a_thin_story(self) -> None:
+        raw = [entry(f"mam-{i}", i, group="mammal", region="United States", native=False) for i in range(1, 8)]
+        raw += [entry("bug-1", 8, group="invertebrate", region="United States"), entry("bird-1", 9, group="bird", region="United States"),
+                entry("thin-native", 10, group="bird", region="Peru", material="thin", native=True),
+                entry("thin-east", 11, group="herp", region="India", material="thin")]
+        selected, _, notes = slate.select_slate(slate.validate_slate(raw).kept, target=5, minimum=3, maximum=8)
+        self.assertFalse([e for e in selected if e["material"] == "thin"])
+        self.assertTrue(any("could not meet balance target" in n for n in notes))
+
+    def test_a_balance_swap_still_prefers_a_solid_story_that_meets_the_rule(self) -> None:
+        raw = [entry(f"mam-{i}", i, group="mammal", region="United States") for i in range(1, 8)]
+        raw += [entry("solid-east", 12, group="bird", region="Japan", native=True), entry("thin-east", 9, group="herp", region="India", material="thin")]
+        selected, _, _ = slate.select_slate(slate.validate_slate(raw).kept, target=5, minimum=3, maximum=8)
+        self.assertIn("solid-east", [e["story_id"] for e in selected])
+
+    def test_a_global_region_is_not_a_place_outside_the_west(self) -> None:
+        raw = [entry(f"mam-{i}", i, group="mammal", region="Germany") for i in range(1, 4)]
+        raw += [entry("g1", 4, group="bird", region="global (Max Planck Institute of Animal Behavior)"),
+                entry("g2", 5, group="herp", region="Worldwide")]
+        _, _, notes = slate.select_slate(slate.validate_slate(raw).kept, target=5, minimum=3, maximum=8)
+        self.assertTrue(any("could not meet balance target: 2 stories centred outside" in n for n in notes))
+
+    def test_placeholders_make_a_story_thin_and_are_reported(self) -> None:
+        raw = [entry("p1", 1, region="North Pacific (confirm study population)"),
+               entry("p2", 2, why_now="Paper and DOI must be traced before drafting."),
+               entry("fine", 3, why_now="Officials confirmed the figures on 2026-10-26.", title="Court confirms the ruling after a long appeal process")]
+        report = slate.validate_slate(raw)
+        by_id = {e["story_id"]: e for e in report.kept}
+        self.assertEqual((by_id["p1"]["material"], by_id["p2"]["material"], by_id["fine"]["material"]), ("thin", "thin", "deep"))
+        self.assertEqual({f["story_id"] for f in report.flagged}, {"p1", "p2"})
 
 
 if __name__ == "__main__":

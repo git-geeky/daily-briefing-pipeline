@@ -285,11 +285,12 @@
         "effort": "low"
       },
       "slate": {
-        "model": "opus",
-        "effort": "medium"
+        "model": "claude-fable-5-1",
+        "effort": "medium",
+        "fallback": "opus"
       },
       "article": {
-        "model": "sonnet",
+        "model": "opus",
         "effort": "medium"
       },
       "repair": {

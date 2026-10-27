@@ -205,7 +205,7 @@
         "effort": "medium"
       },
       "article": {
-        "model": "sonnet",
+        "model": "opus",
         "effort": "medium"
       },
       "repair": {

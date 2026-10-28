@@ -191,6 +191,35 @@ class NormalizeTests(unittest.TestCase):
         text, _ = tools.normalize_article(raw, {**STORY, "title": "A title long enough to count"})
         self.assertIn("**Bottom line:** the verdict.\n\n**Confidence:** Medium. Reasons.", text)
 
+    def test_a_title_that_starts_or_ends_with_an_italic_name_keeps_its_markers(self) -> None:
+        """Live run 2026-10-28: '## *Portia fimbriata* meets ...' came out as 'Portia fimbriata* meets ...'."""
+        for title in ("*Portia fimbriata* meets the criteria for sleep", "Sleep rebound found in *Portia fimbriata*",
+                      "*Portia* and *Salticus* compared", "*Portia fimbriata*"):
+            text, _ = tools.normalize_article(f"## {title}\n\ntext\n", STORY)
+            self.assertEqual(text.split("\n", 1)[0], f"## {title}" if title != "*Portia fimbriata*" else "## Portia fimbriata")
+        text, _ = tools.normalize_article("## Title\n\n### *Bombus* decline: methods\n\ntext\n", STORY)
+        self.assertIn("### *Bombus* decline: methods", text)
+
+    def test_a_title_wrapped_whole_in_bold_or_italics_is_unwrapped(self) -> None:
+        for raw_title in ("**A title long enough to count**", "*A title long enough to count*", "***A title long enough to count***"):
+            text, _ = tools.normalize_article(f"## {raw_title}\n\ntext\n", STORY)
+            self.assertEqual(text.split("\n", 1)[0], "## A title long enough to count")
+        text, _ = tools.normalize_article("## Title\n\n### **Methods and limits:**\n\ntext\n", STORY)
+        self.assertIn("### Methods and limits", text)
+
+    def test_a_watch_next_label_in_a_blockquote_becomes_the_heading_and_its_bullets_plain(self) -> None:
+        """Live run 2026-10-28: one daily article wrote '> **Watch Next 48h:**' with '> - ...' bullets; the others used the heading."""
+        raw = ("## A title long enough to count\n\ntext\n\n> **Watch Next 48h:**\n> - Count of 500,000 ballots begins October 29 (https://a.org).\n"
+               "> - Certified results due November 4 (https://b.org)\n\n### Primary Sources\n- A https://a.org\n")
+        text, fixes = tools.normalize_article(raw, STORY)
+        self.assertIn("### Watch Next 48h\n- Count of 500,000 ballots begins October 29 (https://a.org).\n- Certified results due November 4", text)
+        self.assertNotIn(">", text.split("### Watch Next 48h")[1].split("### Primary Sources")[0])
+        self.assertIn("Watch Next label given as a heading", fixes)
+        plain, _ = tools.normalize_article("## A title long enough to count\n\n**Watch Next:**\n- X on November 4 (https://b.org)\n", STORY)
+        self.assertIn("### Watch Next\n- X on November 4", plain)
+        quoted, _ = tools.normalize_article("## A title long enough to count\n\n> A quoted passage stays a quote.\n", STORY)
+        self.assertIn("> A quoted passage stays a quote.", quoted)
+
     def test_no_heading_is_an_error(self) -> None:
         with self.assertRaises(ValueError):
             tools.normalize_article("just prose, no heading at all", STORY)

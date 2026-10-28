@@ -390,11 +390,11 @@ class DoiRobustnessTests(unittest.TestCase):
     class Fetcher:
         def get_json(self, url, params=None):
             if "api.crossref.org" in url:
-                if "10.1038/s41598-018-37324-w" in url:
+                if url.endswith("/10.1038/s41598-018-37324-w"):   # exact: a longer path is a different (unregistered) DOI
                     return {"message": {"title": ["Stable isotope evidence of plastic ingestion in seabirds"]}}
                 raise RuntimeError("404 Not Found")
             if "api/handles" in url:
-                if "10.5281/zenodo.20072872" in url:
+                if url.endswith("/10.5281/zenodo.20072872"):
                     return {"responseCode": 1, "handle": "10.5281/zenodo.20072872"}
                 raise RuntimeError("404 Not Found")
             raise RuntimeError("unexpected " + url)
@@ -409,6 +409,33 @@ class DoiRobustnessTests(unittest.TestCase):
         self.assertEqual(list(report.dois), ["10.1038/s41598-018-37324-w"])
         self.assertEqual(report.dois["10.1038/s41598-018-37324-w"]["status"], "ok")
         self.assertFalse(report.bad_dois)
+
+    def test_a_publishers_view_word_version_or_query_is_not_part_of_the_doi(self) -> None:
+        """Live run 2026-10-28: a 4,278-word article failed on '10.3389/fmars.2023.1104436/full', taken from a Frontiers address."""
+        cases = {
+            "10.3389/fmars.2023.1104436/full": "10.3389/fmars.2023.1104436",
+            "10.1002/ece3.1234/abstract": "10.1002/ece3.1234",
+            "10.1111/1365-2656.13456/epdf": "10.1111/1365-2656.13456",
+            "10.1002/ece3.1234/full.pdf": "10.1002/ece3.1234",
+            "10.1371/journal.pone.0123456?utm_source=x": "10.1371/journal.pone.0123456",
+            "10.1101/2024.05.06.592718v2.full": "10.1101/2024.05.06.592718",
+            "10.1101/2024.05.06.592718v1": "10.1101/2024.05.06.592718",
+            "10.1101/123456v3.full.pdf": "10.1101/123456",
+            "10.1093/ve/veab012": "10.1093/ve/veab012",          # a slash inside a real DOI stays
+            "10.1016/j.cub.2020.01.001": "10.1016/j.cub.2020.01.001",
+        }
+        for raw, expected in cases.items():
+            self.assertEqual(prov.clean_doi(raw), expected, raw)
+        report = self.check("## T\nText.\n\n### Primary Sources\n- Seabird isotopes, plastic ingestion. "
+                            "https://www.nature.com/articles/10.1038/s41598-018-37324-w/full\n")
+        self.assertEqual(list(report.dois), ["10.1038/s41598-018-37324-w"])
+        self.assertFalse(report.bad_dois)
+
+    def test_an_unknown_view_word_is_dropped_only_when_what_is_left_is_registered(self) -> None:
+        report = self.check("## T\nSee doi:10.1038/s41598-018-37324-w/viewer and doi:10.9999/invented/viewer here.\n")
+        self.assertEqual(report.dois["10.1038/s41598-018-37324-w/viewer"]["status"], "ok")
+        self.assertIn("publisher", report.dois["10.1038/s41598-018-37324-w/viewer"]["detail"])
+        self.assertEqual(report.bad_dois, ["10.9999/invented/viewer"])
 
     def test_a_doi_from_another_registration_agency_is_not_called_fabricated(self) -> None:
         report = self.check("## T\nThe data are archived at doi:10.5281/zenodo.20072872 and doi:10.5281/zenodo.99999999.\n")
@@ -425,6 +452,55 @@ class DoiRobustnessTests(unittest.TestCase):
         self.assertIn("91.4%", [n["text"] for n in report.unmatched_numbers])
 
 
+
+
+class TitleQuoteTests(unittest.TestCase):
+    """Live run 2026-10-28: quoted paper titles were given as paraphrase although the DOI check had the registered titles."""
+
+    class Fetcher:
+        def __init__(self):
+            self.calls = []
+
+        def get_json(self, url, params=None):
+            self.calls.append(url)
+            titles = {"10.1073/pnas.2211216119": "A sleeping paradox may extend to the spider",
+                      "10.1371/journal.pone.0361610": "The antibacterial and antifungal activity of honey and propolis from the "
+                                                      "Australian stingless bee <i>Tetragonula carbonaria</i>"}
+            for doi, title in titles.items():
+                if url.endswith("/" + doi):
+                    return {"message": {"title": [title]}}
+            raise RuntimeError("404 Not Found")
+
+    ARTICLE = ('## T\nKlein\'s commentary, "A sleeping paradox may extend to the spider," argued for caution. The paper, "The antibacterial '
+               'and antifungal activity of honey and propolis from the Australian stingless bee *Tetragonula carbonaria*", appeared '
+               'on Monday. The minister said "a sentence that nobody ever wrote down anywhere" later.\n\n### Primary Sources\n'
+               '- Klein (2022). A sleeping paradox may extend to the spider. PNAS. doi:10.1073/pnas.2211216119\n'
+               '- Li et al. (2026). Stingless bee honey and propolis. PLOS ONE. doi:10.1371/journal.pone.0361610\n')
+
+    def test_a_quoted_registered_title_is_confirmed_and_an_invented_quotation_is_not(self) -> None:
+        report = prov.check_article(self.ARTICLE, ["Unrelated page text."], json_fetcher=self.Fetcher(), url_checker=lambda url: 200)
+        self.assertEqual(len(report.title_quotes), 2)
+        self.assertEqual(report.unmatched_quotes, ["a sentence that nobody ever wrote down anywhere"])
+        self.assertEqual(report.to_dict()["title_quotes"], 2)
+
+    def test_a_doi_accepted_from_an_opened_source_has_its_title_fetched_only_when_a_quotation_needs_it(self) -> None:
+        corpus = ["The commentary doi:10.1073/pnas.2211216119 was discussed.", "Also doi:10.1371/journal.pone.0361610 here."]
+        fetcher = self.Fetcher()
+        report = prov.check_article(self.ARTICLE, corpus, json_fetcher=fetcher, url_checker=lambda url: 200)
+        self.assertEqual(report.dois["10.1073/pnas.2211216119"]["detail"], "appeared in an opened source")
+        self.assertEqual(len(report.title_quotes), 2)
+        self.assertEqual(len(fetcher.calls), 2, "one title lookup per DOI, made because quotations were still unverified")
+        quiet = self.Fetcher()
+        prov.check_article("## T\nNo quotations here.\n\n### Primary Sources\n- X. doi:10.1073/pnas.2211216119\n", corpus,
+                           json_fetcher=quiet, url_checker=lambda url: 200)
+        self.assertEqual(quiet.calls, [], "nothing is fetched when every quotation is already verified")
+
+    def test_a_title_confirms_a_summary_only_quotation_too(self) -> None:
+        corpus = ["A summary says: A sleeping paradox may extend to the spider."]
+        article = '## T\nKlein wrote "A sleeping paradox may extend to the spider" in 2022.\n\n### Primary Sources\n- Klein. doi:10.1073/pnas.2211216119\n'
+        report = prov.check_article(article, corpus, json_fetcher=self.Fetcher(), url_checker=lambda url: 200, verbatim_corpus=[])
+        self.assertEqual(report.summary_only_quotes, [])
+        self.assertEqual(len(report.title_quotes), 1)
 
 class WeakCueArithmeticTests(unittest.TestCase):
     """Found in the fifth live run: plain comparisons ("a margin of 4.4 million", "0.7 points lower") are arithmetic too, but are common
@@ -485,15 +561,29 @@ class CitedPagesAndDemotionTests(unittest.TestCase):
         self.assertNotIn("https://img.org/z.jpg", prov.cited_urls(md))
 
     def test_demotion_removes_the_quotation_marks_and_keeps_the_words(self) -> None:
-        md = ('## T\n\nShe said "we will not comply with the order as written under any circumstances" today and "a short phrase" too.\n\n'
-              '### Primary Sources\n- A \u201cwe will not comply with the order as written under any circumstances\u201d https://x.org\n')
-        out, n = prov.demote_quotes(md, ["we will not comply with the order as written under any circumstances"])
+        md = ('## T\n\nShe said the agency "will not comply with the order as written under any circumstances" today and "a short phrase" too.\n\n'
+              '### Primary Sources\n- A \u201cwill not comply with the order as written under any circumstances\u201d https://x.org\n')
+        out, n = prov.demote_quotes(md, ["will not comply with the order as written under any circumstances"])
         self.assertEqual(n, 1)
-        self.assertIn("She said we will not comply with the order as written under any circumstances today", out)
+        self.assertIn("She said the agency will not comply with the order as written under any circumstances today", out)
         self.assertIn('"a short phrase"', out)                                             # not listed: untouched
-        self.assertIn("\u201cwe will not comply with the order", out.split("### Primary Sources")[1])  # the sources block is never edited
+        self.assertIn("\u201cwill not comply with the order", out.split("### Primary Sources")[1])  # the sources block is never edited
 
     def test_a_quotation_wrapped_across_lines_is_found(self) -> None:
-        out, n = prov.demote_quotes('He said "we will not comply with the order\nas written under any circumstances" today.\n', ["we will not comply with the order as written under any circumstances"])
+        out, n = prov.demote_quotes('He said the agency "will not comply with the order\nas written under any circumstances" today.\n', ["will not comply with the order as written under any circumstances"])
         self.assertEqual(n, 1)
         self.assertNotIn('"', out)
+
+    def test_a_quotation_in_the_speakers_own_voice_stays_a_quotation(self) -> None:
+        """Live run 2026-10-28: 'attacking Iran was one of the greatest things I ever did (Fox News)' read as the briefing's own voice."""
+        md = ('## T\n\nAt the rally the war was "going to end very soon," and attacking Iran was "one of the greatest things I ever did" '
+              '(Fox News). He added "We could take the whole country" and that the strait was "ours to control from the next week on".\n')
+        quotes = ["one of the greatest things I ever did", "We could take the whole country", "going to end very soon,",
+                  "ours to control from the next week on"]
+        out, n = prov.demote_quotes(md, quotes)
+        self.assertEqual(n, 1)                                                   # "going to end very soon" only
+        self.assertIn('"one of the greatest things I ever did"', out)
+        self.assertIn('"We could take the whole country"', out)
+        self.assertIn('"ours to control from the next week on"', out)
+        self.assertIn("war was going to end very soon,", out)
+        self.assertFalse(prov.in_speaker_voice("the US will respond in kind"), "the country is not a pronoun")

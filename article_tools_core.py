@@ -27,6 +27,18 @@ SCHEMELESS_URL_RE = re.compile(r"(?i)(?<![\w@/.-])(?:www\.[a-z0-9-]+(?:\.[a-z0-9
 _DOI_URL_RE = re.compile(r"https?://(?:dx\.)?doi\.org/(10\.[^\s)\]>]+)", re.I)
 _BARE_URL_RE = re.compile(r"\s*<?https?://[^\s)>\]]+>?")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
+_WRAPPED_RE = re.compile(r"(\*{1,3}|_{1,3})(.+?)\1")
+# Watch Next written as a bold label, often in a blockquote ("> **Watch Next 48h:**"), instead of the heading the prompts ask for.
+_WATCH_LABEL_RE = re.compile(r"^>?\s*\*\*(Watch Next[^*]*?):?\*\*:?\s*$", re.I)
+
+
+def _unwrap_emphasis(label: str) -> str:
+    """'**Title**' -> 'Title'. Only a label wrapped whole is unwrapped: an italic name at either end
+    ('*Portia fimbriata* meets ...') keeps its markers (live run 2026-10-28 lost the opening one)."""
+    wrapped = _WRAPPED_RE.fullmatch(label)
+    if wrapped and wrapped.group(1)[0] not in wrapped.group(2):
+        return wrapped.group(2).strip()
+    return label
 _CANONICAL_HEADINGS = (
     # Whole-heading matches only. A prefix match renamed "Source bias" to "Primary Sources" and produced two of them, which
     # made the validator read the empty one (a live daily run lost eleven articles to this).
@@ -52,16 +64,28 @@ def normalize_article(raw: str, story: dict[str, Any]) -> tuple[str, list[str]]:
 
     out: list[str] = []
     title_seen = False
+    unquoting = False  # inside a Watch Next block that was written as a blockquote
     for line in lines:
+        watch = _WATCH_LABEL_RE.match(line) if title_seen else None
+        if watch:
+            out.append(f"### {watch.group(1).strip()}")
+            unquoting = line.lstrip().startswith(">")
+            fixes.append("Watch Next label given as a heading")
+            continue
+        if unquoting:
+            if line.lstrip().startswith(">"):
+                out.append(line.lstrip()[1:].lstrip())
+                continue
+            unquoting = False
         heading = _HEADING_RE.match(line)
         if heading:
             level, label = len(heading.group(1)), heading.group(2).strip()
             if not title_seen:
                 title_seen = True
-                title = re.sub(r"^\*+|\*+$", "", label).strip() or story["title"]
+                title = _unwrap_emphasis(label).strip() or story["title"]
                 out.append(f"## {title}")
                 continue
-            label = re.sub(r"^\*+|\*+$", "", label).strip().rstrip(":")
+            label = _unwrap_emphasis(label).strip().rstrip(":")
             if level <= 2:
                 fixes.append(f"demoted heading {label!r} to level 3")
             for pattern, canonical in _CANONICAL_HEADINGS:

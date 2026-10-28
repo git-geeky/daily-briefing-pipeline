@@ -1499,16 +1499,24 @@ class Conductor:
             if self._skip_low_confidence(article, sid, outcome):
                 return outcome  # a repair that leaves the writer unsure of its own conclusion does not make it publishable
 
-        demoted = 0
+        demoted = still_quoted = 0
         if self.settings.get("demote_unverified_quotes", True) and prov.summary_only_quotes:
-            article, demoted = provenance_core.demote_quotes(article, prov.summary_only_quotes)
+            remaining: list[str] = []
+            for quote in prov.summary_only_quotes:
+                article, changed = provenance_core.demote_quotes(article, [quote])
+                if changed:
+                    demoted += 1
+                else:
+                    remaining.append(quote)  # in the speaker's own voice (I, we, you), or not found as written: still quoted, still told
             if demoted:
                 outcome.fixes.append(f"{demoted} quotation(s) that could be checked only against a page summary were given as paraphrase")
-                prov.quotes_checked = max(0, prov.quotes_checked - len(prov.summary_only_quotes))
-                prov.summary_only_quotes = []
+            still_quoted = len(remaining)
+            prov.quotes_checked = max(0, prov.quotes_checked - demoted)
+            prov.summary_only_quotes = remaining
         outcome.words = int(item.get("word_count", 0))
         outcome.provenance = prov.to_dict()
         outcome.provenance["quotes_demoted"] = demoted
+        outcome.provenance["quotes_summary_only_kept"] = still_quoted
         outcome.provenance["unread_mentions"] = len(tools.find_unread_source_mentions(article))  # what is left after repair, for the trend
         if tax is not None:
             outcome.provenance["taxonomy"] = tax.to_dict()
@@ -2089,6 +2097,10 @@ class Conductor:
         demoted = sum(int((a["meta"].get("provenance") or {}).get("quotes_demoted") or 0) for a in articles)
         if demoted:
             notes.append(f"{demoted} quotation(s) could not be checked word for word against a page and are given as paraphrase")
+        kept = sum(int((a["meta"].get("provenance") or {}).get("quotes_summary_only_kept") or 0) for a in articles)
+        if kept:
+            notes.append(f"{kept} more quotation(s), mostly in the speaker's own words, could be checked only against a summary of the page "
+                         "that carries them")
         if serious:
             notes.append("figures or quotations not verified against the sources fetched in: " + "; ".join(serious))
         if mild:

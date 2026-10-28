@@ -52,9 +52,26 @@ DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s)\]>\"'|,;]+[^\s)\]>\"'|,;.]")
 _URL_RE = re.compile(r"https?://[^\s)>\]]+")
 
 
+_DOI_TRAILING = r"[*_`.,;:)\]\u2019\u201d\"']+$"
+# A DOI taken from a publisher's address carries the address's view word: frontiersin.org/.../10.3389/fmars.2023.1104436/full
+# (live run 2026-10-28: a 4,278-word article failed on "10.3389/fmars.2023.1104436/full", which no agency has, although the
+# DOI itself was right), Wiley's /abstract, /epdf, /full.pdf, a query string, a fragment.
+_DOI_VIEW_SUFFIX = re.compile(r"(?:/(?:full|abstract|abs|pdf|epdf|pdfdirect|fulltext|full\.pdf|fulltext\.html|html|xml|meta|summary|"
+                              r"references|figures|tables|supplementary|suppl|metrics|citations|reader))+$", re.I)
+# bioRxiv and medRxiv addresses add the version and view to the DOI: 10.1101/2024.05.06.592718v2.full is 10.1101/2024.05.06.592718.
+_BIORXIV_VERSION = re.compile(r"^(10\.1101/(?:\d{4}\.\d{2}\.\d{2}\.)?\d+)v\d+(?:\.[a-z.\-]+)?$", re.I)
+
+
 def clean_doi(doi: str) -> str:
-    """A DOI as written in prose is often wrapped in markdown ("**doi:10.1038/x.**") or followed by punctuation; neither is part of it."""
-    return re.sub(r"[*_`.,;:)\]\u2019\u201d\"']+$", "", doi.strip())
+    """A DOI as written in prose is often wrapped in markdown ("**doi:10.1038/x.**") or followed by punctuation, and one taken from
+    a publisher's address ends with the address's view word ("/full") or a version ("v2.full"); none of these is part of it."""
+    doi = re.sub(_DOI_TRAILING, "", doi.strip())
+    doi = re.sub(r"[?#].*$", "", doi)
+    doi = _DOI_VIEW_SUFFIX.sub("", doi)
+    preprint = _BIORXIV_VERSION.match(doi)
+    if preprint:
+        doi = preprint.group(1)
+    return re.sub(_DOI_TRAILING, "", doi)
 _SKIP_SECTIONS = ("primary sources", "watch next", "sources")
 
 
@@ -82,6 +99,7 @@ class ProvenanceReport:
     summary_only_limit: int = 3                                  # how many summary-only quotations are tolerated before a repair
     translated_quotes: list[str] = field(default_factory=list)   # marked as the writer's translation, with a verified original beside it
     summary_only_quotes: list[str] = field(default_factory=list)  # found only in a fetch *answer* (a small model's words), not in page text
+    title_quotes: list[str] = field(default_factory=list)         # a cited paper's registered title (or part of it), quoted
     dois: dict[str, dict] = field(default_factory=dict)
     dead_urls: list[dict] = field(default_factory=list)
     unknown_urls: list[str] = field(default_factory=list)
@@ -119,7 +137,7 @@ class ProvenanceReport:
             "numbers_checked": self.numbers_checked, "numbers_matched": self.numbers_matched,
             "unmatched_ratio": round(self.unmatched_ratio, 3), "unmatched_numbers": self.unmatched_numbers[:60],
             "quotes_checked": self.quotes_checked, "unmatched_quotes": self.unmatched_quotes[:20],
-            "translated_quotes": len(self.translated_quotes), "summary_only_quotes": len(self.summary_only_quotes),
+            "translated_quotes": len(self.translated_quotes), "summary_only_quotes": len(self.summary_only_quotes), "title_quotes": len(self.title_quotes),
             "derived_numbers": self.derived_numbers[:30],
             "dois": self.dois, "dead_urls": self.dead_urls, "unknown_urls": self.unknown_urls[:40],
             "corpus_chars": self.corpus_chars,
@@ -510,6 +528,17 @@ def _title_tokens(text: str) -> set[str]:
 
 
 def check_doi(doi: str, citation_text: str, fetcher: JsonFetcher) -> dict[str, Any]:
+    result = _check_doi_once(doi, citation_text, fetcher)
+    head, _, last = doi.rpartition("/")
+    if result["status"] == "not_found" and "/" in head and re.fullmatch(r"[A-Za-z]{2,12}", last):
+        # one more publisher view word that clean_doi does not know ("/viewer"): the DOI is what is left, if an agency has it
+        trimmed = _check_doi_once(head, citation_text, fetcher)
+        if trimmed["status"] == "ok":
+            return {**trimmed, "detail": f"registered as {head}; '/{last}' belongs to the publisher's address"}
+    return result
+
+
+def _check_doi_once(doi: str, citation_text: str, fetcher: JsonFetcher) -> dict[str, Any]:
     try:
         payload = fetcher.get_json(f"https://api.crossref.org/works/{doi}")
     except Exception as exc:  # noqa: BLE001
@@ -619,14 +648,27 @@ def cited_urls(markdown: str) -> list[str]:
     return list(seen)
 
 
+# A speaker's own first- or second-person words. Without quotation marks they would read as the briefing's voice (live run 2026-10-28:
+# 'attacking Iran was one of the greatest things I ever did (Fox News)'), so such a quotation is never given as paraphrase.
+_SPEAKER_VOICE_RE = re.compile(r"\b(?:I|I'm|I've|I'd|I'll|[Mm]e|[Mm]y|[Mm]ine|[Mm]yself|[Ww]e|[Ww]e're|[Ww]e've|[Ww]e'd|[Ww]e'll|us|[Oo]ur|"
+                               r"[Oo]urs|[Oo]urselves|[Yy]ou|[Yy]ou're|[Yy]ou've|[Yy]ou'd|[Yy]ou'll|[Yy]our|[Yy]ours)\b")
+
+
+def in_speaker_voice(quote: str) -> bool:
+    return bool(_SPEAKER_VOICE_RE.search(quote.replace("\u2019", "'")))
+
+
 def demote_quotes(markdown: str, quotes: list[str]) -> tuple[str, int]:
     """Give each listed quotation as paraphrase: its quotation marks are removed and its words stay. A quotation that could be checked
-    only against a page summary (a small model's answer about the page) is not shown as the page's own words. Only text before the
-    Primary Sources block is touched. Returns (new markdown, number of quotations changed)."""
+    only against a page summary (a small model's answer about the page) is not shown as the page's own words. A quotation in the
+    speaker's own voice (I, we, you) is left as it is: unquoted it would put the speaker's words in the briefing's mouth. Only text
+    before the Primary Sources block is touched. Returns (new markdown, number of quotations changed)."""
     block = re.search(r"(?m)^###\s+Primary Sources\b", markdown)
     head, tail = (markdown[:block.start()], markdown[block.start():]) if block else (markdown, "")
     changed = 0
     for quote in quotes:
+        if in_speaker_voice(quote):
+            continue
         words = [re.escape(w) for w in quote.split()]
         if len(words) < 3:
             continue
@@ -634,6 +676,30 @@ def demote_quotes(markdown: str, quotes: list[str]) -> tuple[str, int]:
         head, n = pattern.subn(lambda m: m.group(1), head)
         changed += 1 if n else 0
     return head + tail, changed
+
+
+def _plain(text: str) -> str:
+    """Markup a title carries in one place and not the other: Crossref's <i>Genus</i>, the article's *Genus*."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>|[*_]", "", text)).strip()
+
+
+def registered_titles(dois: dict[str, dict], fetcher: JsonFetcher | None) -> list[str]:
+    """The registered titles of the DOIs an article cites: kept from the DOI check, or fetched from Crossref for a DOI that was
+    accepted because it appeared in an opened source (and so was never looked up). Stored back on the DOI's entry."""
+    titles: list[str] = []
+    for doi, info in dois.items():
+        title = info.get("registered_title") or ""
+        if not title and fetcher is not None and info.get("status") == "ok":
+            try:
+                found = ((fetcher.get_json(f"https://api.crossref.org/works/{doi}") or {}).get("message") or {}).get("title") or []
+                title = found[0] if found else ""
+            except Exception:  # noqa: BLE001 - a title we cannot fetch simply does not confirm anything
+                title = ""
+            if title:
+                info["registered_title"] = title
+        if title:
+            titles.append(title)
+    return titles
 
 
 def check_article(
@@ -692,6 +758,20 @@ def check_article(
         else:
             report.dois[doi] = {"status": "unchecked", "detail": "network checks disabled"}
 
+    # A quoted paper title ("A sleeping paradox may extend to the spider") is the paper's own registered wording, not a quotation
+    # from a page: live run 2026-10-28 gave such titles as paraphrase. The DOI check has the titles, or fetches them now, and only
+    # while a quotation is still unverified.
+    pending = report.unmatched_quotes + report.summary_only_quotes
+    if pending:
+        titles = registered_titles(report.dois, json_fetcher if check_network else None)
+        if titles:
+            normalized_titles = _plain(normalize_text("\n".join(titles)))
+            confirmed = {quote for quote in pending if quote_in_corpus(_plain(quote), normalized_titles)}
+            if confirmed:
+                report.unmatched_quotes = [q for q in report.unmatched_quotes if q not in confirmed]
+                report.summary_only_quotes = [q for q in report.summary_only_quotes if q not in confirmed]
+                report.title_quotes = sorted(confirmed)
+
     if check_network and url_checker is not None:
         seen: set[str] = set()
         for entry in entries:
@@ -710,5 +790,5 @@ def check_article(
 
 __all__ = [
     "NumberClaim", "ProvenanceReport", "check_article", "check_doi", "cited_urls", "clean_doi", "default_url_checker", "demote_quotes",
-    "extract_numeric_claims", "extract_quotes", "normalize_text", "quote_in_corpus",
+    "extract_numeric_claims", "extract_quotes", "in_speaker_voice", "normalize_text", "quote_in_corpus", "registered_titles",
 ]

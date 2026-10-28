@@ -555,6 +555,12 @@ class VerificationNoteTests(unittest.TestCase):
         self.assertNotIn("Title of story 1", notes[0])
         self.assertEqual(notes[1], "2 more stories rest partly on summaries of pages or carry a stray unverified figure")
 
+    def test_quotations_given_as_paraphrase_and_those_kept_quoted_are_both_counted(self) -> None:
+        notes = self.note([{"quotes_demoted": 3, "quotes_summary_only_kept": 2}, {"quotes_demoted": 1}])
+        self.assertIn("4 quotation(s) could not be checked word for word against a page and are given as paraphrase", notes)
+        self.assertIn("2 more quotation(s), mostly in the speaker's own words, could be checked only against a summary of the page "
+                      "that carries them", notes)
+
     def test_a_single_mild_case_reads_in_the_singular(self) -> None:
         self.assertEqual(self.note([{"unmatched_numbers": [{"text": "1"}]}]),
                          ["1 more story rests partly on summaries of pages or carries a stray unverified figure"])

@@ -51,6 +51,8 @@ AVOID_TITLE_RE = re.compile(
 )
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
 MAX_STORED_WIDTH = 1800
+DEFAULT_STORY_BUDGET_SECONDS = 180.0   # replay: the slowest story took 52 s behind a throttled host; past this a story stops looking and keeps what it has
+
 USER_AGENT = os.environ.get(
     "BRIEFING_HTTP_USER_AGENT",
     "AnimalBriefingPhotoStage/1.0 (https://github.com/git-geeky/daily-briefing-pipeline; briefing automation)",
@@ -362,7 +364,15 @@ def photos_for_story(
     per_min: int,
     per_max: int,
     used_pages: set[str],
+    clock: Callable[[], float] = time.monotonic,
 ) -> StoryPhotos:
+    started = clock()
+    budget = float(policy.get("story_budget_seconds", DEFAULT_STORY_BUDGET_SECONDS) or 0)   # 0 = no limit
+    spent_note = {"reason": f"the story's {budget:.0f} s search budget was spent; the photographs found so far are kept"}
+
+    def spent() -> bool:
+        return bool(budget) and clock() - started > budget
+
     queries = [q for q in (story.get("photo_queries") or []) if str(q).strip()]
     result = StoryPhotos(story_id=str(story["story_id"]), queries=queries)
     if not queries:
@@ -377,8 +387,16 @@ def photos_for_story(
     providers = [p for p in policy.get("providers") or ("wikimedia", "inaturalist", "openverse") if p in PROVIDER_PRIORITY]
 
     pool: list[PhotoCandidate] = []
+    enough = False
+    providers = sorted(providers, key=lambda name: -PROVIDER_PRIORITY[name])  # the providers that rank highest are asked first
     for query in queries:
+        if enough:
+            break
         for provider in providers:
+            if spent():
+                enough = True
+                result.rejected.append(spent_note)
+                break
             try:
                 if provider == "wikimedia":
                     found = search_wikimedia(fetcher, query)
@@ -390,9 +408,10 @@ def photos_for_story(
                 result.rejected.append({"provider": provider, "query": query, "reason": f"provider error: {exc!r}"[:200]})
                 continue
             pool.extend(found)
-        usable = [c for c in pool if c.license_family in licenses and c.page_url not in used_pages and not c.reject_reason]
-        if len(usable) >= per_max * 3:
-            break
+            usable = [c for c in pool if c.license_family in licenses and c.page_url not in used_pages and not c.reject_reason]
+            if len(usable) >= per_max * 3:  # enough candidates: the remaining providers and queries are not asked (live run: Openverse alone
+                enough = True               # cost 8 of the stage's 12 minutes by timing out on every query of every story)
+                break
 
     scored: list[PhotoCandidate] = []
     for candidate in pool:
@@ -414,6 +433,9 @@ def photos_for_story(
     seen_hashes: set[str] = set()
     for candidate in scored:
         if len(result.chosen) >= per_max:
+            break
+        if spent():
+            result.rejected.append(spent_note)
             break
         try:
             data, content_type = fetcher.get_bytes(candidate.image_url)
@@ -451,10 +473,12 @@ class RequestsFetcher:
     """Plain ``requests`` fetcher: descriptive User-Agent, per-host spacing, ``Retry-After`` aware retries."""
 
     MIN_INTERVAL_SECONDS = 1.0
-    MAX_RETRY_AFTER_SECONDS = 45.0
+    MAX_RETRY_AFTER_SECONDS = 45.0      # a host that asks for longer than this is not waited for: it is left alone for the rest of the run
+    MAX_WAIT_PER_CALL_SECONDS = 60.0    # all retry waits of one call together (3 x 45 s per image otherwise)
+    RETRYABLE_STATUSES = (429, 500, 502, 503, 504)
 
     def __init__(self, *, timeout: float = 40.0, retries: int = 3, sleep: Callable[[float], None] = time.sleep,
-                 clock: Callable[[], float] = time.monotonic, max_bytes: int = net_safety.DEFAULT_MAX_BYTES):
+                 clock: Callable[[], float] = time.monotonic, max_bytes: int = net_safety.DEFAULT_MAX_BYTES, breaker_threshold: int = 0):
         import requests
 
         self._requests = requests
@@ -464,6 +488,9 @@ class RequestsFetcher:
         self.timeout, self.retries, self._sleep, self._clock = timeout, retries, sleep, clock
         self._next_slot: dict[str, float] = {}
         self._lock = threading.Lock()
+        self.breaker_threshold = breaker_threshold      # consecutive failed requests after which a host is not asked again (0 = never)
+        self._failures: dict[str, int] = {}
+        self._open_hosts: set[str] = set()
         self._requests_by_host: dict[str, int] = {}
         self._waits = {"spacing_s": 0.0, "retry_s": 0.0, "retries": 0}   # where the stage's time goes (summed over threads)
 
@@ -480,38 +507,76 @@ class RequestsFetcher:
         if slot - now > 0:
             self._sleep(slot - now)
 
-    def _wait_for_retry(self, seconds: float) -> None:
+    def _wait_for_retry(self, url: str, seconds: float) -> None:
+        """Sleep before a retry, and hold every other thread's next request to this host back for as long: a host that has said "too many
+        requests" is not helped by three more threads asking while the first one waits."""
+        host = self._host(url)
         with self._lock:
             self._waits["retry_s"] += seconds
             self._waits["retries"] += 1
+            self._next_slot[host] = max(self._next_slot.get(host, 0.0), self._clock() + seconds)
         self._sleep(seconds)
+
+    def _give_up_on(self, host: str) -> None:
+        with self._lock:
+            self._open_hosts.add(host)
 
     def summary(self) -> dict[str, Any]:
         """Requests per host and the seconds spent waiting (per-host spacing and retries, summed over threads), for the stage's log line."""
         with self._lock:
             hosts = sorted(self._requests_by_host.items(), key=lambda kv: -kv[1])
             return {"requests": sum(self._requests_by_host.values()), "top_hosts": dict(hosts[:4]), "retries": self._waits["retries"],
-                    "retry_wait_s": round(self._waits["retry_s"]), "spacing_wait_s": round(self._waits["spacing_s"])}
+                    "retry_wait_s": round(self._waits["retry_s"]), "spacing_wait_s": round(self._waits["spacing_s"]),
+                    "given_up_on": sorted(self._open_hosts)}
+
+    def _host(self, url: str) -> str:
+        return re.sub(r"^https?://", "", url).split("/", 1)[0]
+
+    def _note(self, url: str, ok: bool) -> None:
+        host = self._host(url)
+        with self._lock:
+            self._failures[host] = 0 if ok else self._failures.get(host, 0) + 1
+            if self.breaker_threshold and self._failures[host] >= self.breaker_threshold:
+                self._open_hosts.add(host)
 
     def _get(self, url: str, params: dict[str, Any] | None = None):
+        host = self._host(url)
+        if host in self._open_hosts:
+            raise RuntimeError(f"GET {url} skipped: {host} is not being asked again in this run")
         last: Exception | None = None
+        waited = 0.0
         for attempt in range(self.retries + 1):
             self._space(url)
             try:
                 response = self._session.get(url, params=params, timeout=self.timeout)
-                if response.status_code in (429, 500, 502, 503, 504) and attempt < self.retries:
+                status = response.status_code
+                if status in self.RETRYABLE_STATUSES:
                     retry_after = response.headers.get("Retry-After", "")
                     delay = float(retry_after) if retry_after.isdigit() else 2 ** attempt * 3
-                    self._wait_for_retry(min(delay, self.MAX_RETRY_AFTER_SECONDS))
-                    continue
-                response.raise_for_status()
+                    if delay > self.MAX_RETRY_AFTER_SECONDS:  # "come back in ten minutes" answers the next run, not this one
+                        self._give_up_on(host)
+                        self._note(url, False)
+                        raise RuntimeError(f"GET {url} refused: {host} answered {status} and asked for {delay:.0f} s")
+                    if attempt < self.retries and waited + delay <= self.MAX_WAIT_PER_CALL_SECONDS:
+                        waited += delay
+                        self._wait_for_retry(url, delay)
+                        continue
+                    last = RuntimeError(f"HTTP {status}")
+                    break
+                if status >= 400:
+                    self._note(url, True)  # the host answered: a missing or forbidden file says nothing about the host, and asking again will not change it
+                    raise RuntimeError(f"GET {url} failed: HTTP {status}")
+                self._note(url, True)
                 return response
             except (net_safety.UnsafeUrl, net_safety.ResponseTooLarge) as exc:
                 raise RuntimeError(f"GET {url} refused: {exc}") from exc  # not a transient fault: never retried
             except self._requests.RequestException as exc:
                 last = exc
+                if isinstance(exc, self._requests.Timeout) and attempt >= 1:
+                    break  # a server that timed out twice is not coming back in the next few seconds (3 x 40 s per call otherwise)
                 if attempt < self.retries:
-                    self._wait_for_retry(2 ** attempt * 2)
+                    self._wait_for_retry(url, 2 ** attempt * 2)
+        self._note(url, False)
         raise RuntimeError(f"GET {url} failed: {last!r}")
 
     def get_json(self, url: str, params: dict[str, Any] | None = None) -> Any:

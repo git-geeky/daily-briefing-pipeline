@@ -1119,7 +1119,7 @@ class Conductor:
         stories = slate["selected"] + slate["backups"][:4]
         stories += [b for b in slate["backups"][4:] if self.is_fill(b)][: int(self.settings["fill_reserves"])]  # human-interest fill-ins
         image_dir = Path(self.paths.image_cache_dir(self.date))
-        fetcher = self.photo_fetcher or photo_core.RequestsFetcher()
+        fetcher = self.photo_fetcher or photo_core.RequestsFetcher(timeout=20.0, breaker_threshold=2)  # a dead provider costs seconds, not minutes
         started = time.time()
         report = photo_core.run_photo_stage(stories, image_dir=image_dir, report_path=image_dir / "image-report.json",
                                             fetcher=fetcher, edition=self.edition, date=self.date)

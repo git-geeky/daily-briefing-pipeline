@@ -220,19 +220,66 @@ class RequestsFetcherTests(unittest.TestCase):
         def json(self):
             return self._payload
 
-    def make(self, responses):
+    def make(self, responses, breaker_threshold: int = 0):
         sleeps: list[float] = []
-        fetcher = photo_core.RequestsFetcher(retries=3, sleep=sleeps.append, clock=lambda: 1000.0)
+        now = [1000.0]
+
+        def sleep(seconds: float) -> None:    # the clock moves on while a thread sleeps, as it does in a run
+            sleeps.append(seconds)
+            now[0] += seconds
+
+        fetcher = photo_core.RequestsFetcher(retries=3, sleep=sleep, clock=lambda: now[0], breaker_threshold=breaker_threshold)
         queue = list(responses)
         fetcher._session.get = lambda url, params=None, timeout=None: queue.pop(0)  # type: ignore[assignment]
+        fetcher.unused = queue  # type: ignore[attr-defined]  # the responses no request has asked for
         return fetcher, sleeps
 
-    def test_honours_retry_after_and_caps_it(self) -> None:
-        fetcher, sleeps = self.make([self.Resp(429, {"Retry-After": "7"}), self.Resp(429, {"Retry-After": "600"}),
-                                     self.Resp(200, payload={"ok": 1})])
+    def test_honours_a_short_retry_after(self) -> None:
+        fetcher, sleeps = self.make([self.Resp(429, {"Retry-After": "7"}), self.Resp(200, payload={"ok": 1})])
         self.assertEqual(fetcher.get_json("https://commons.example/api"), {"ok": 1})
         self.assertIn(7.0, sleeps)
-        self.assertIn(photo_core.RequestsFetcher.MAX_RETRY_AFTER_SECONDS, sleeps)
+
+    def test_a_retry_after_beyond_the_cap_gives_the_host_up_for_the_run_without_waiting(self) -> None:
+        """Seventh live run: upload.wikimedia.org answered 429 with Retry-After 600 and each image slept 3 x 45 s before failing."""
+        fetcher, sleeps = self.make([self.Resp(429, {"Retry-After": "600"}), self.Resp(200, payload={"ok": 1})])
+        with self.assertRaises(RuntimeError) as caught:
+            fetcher.get_json("https://upload.example/a.jpg")
+        self.assertIn("asked for 600 s", str(caught.exception))
+        self.assertEqual([s for s in sleeps if s > 1.5], [], "no retry wait at all")
+        self.assertEqual(fetcher.summary()["given_up_on"], ["upload.example"])
+        with self.assertRaises(RuntimeError) as skipped:
+            fetcher.get_json("https://upload.example/b.jpg")
+        self.assertIn("skipped", str(skipped.exception))
+        self.assertEqual(len(fetcher.unused), 1, "the second request never reached the host")  # type: ignore[attr-defined]
+        self.assertEqual(fetcher.get_json("https://other.example/api"), {"ok": 1}, "other hosts are not affected")
+
+    def test_the_retry_waits_of_one_call_share_one_budget(self) -> None:
+        fetcher, sleeps = self.make([self.Resp(429, {"Retry-After": "30"})] * 4 + [self.Resp(200, payload={"ok": 1})])
+        with self.assertRaises(RuntimeError):
+            fetcher.get_json("https://commons.example/api")
+        self.assertEqual([s for s in sleeps if s > 1.5], [30.0, 30.0], "a third 30 s wait would pass the 60 s budget")
+        self.assertEqual(len(fetcher.unused), 2, "three requests were made, not four or five")  # type: ignore[attr-defined]
+
+    def test_a_wait_for_one_thread_holds_the_other_threads_back_from_that_host(self) -> None:
+        sleeps: list[float] = []
+        fetcher = photo_core.RequestsFetcher(sleep=sleeps.append, clock=lambda: 1000.0)   # a clock that stands still: the other thread asks at once
+        fetcher._wait_for_retry("https://commons.example/api", 30.0)
+        sleeps.clear()
+        fetcher._space("https://commons.example/api")     # another thread's request, clock unchanged: it queues behind the cooldown
+        self.assertEqual(sleeps, [30.0])
+        sleeps.clear()
+        fetcher._space("https://api.inaturalist.example/v1")
+        self.assertEqual(sleeps, [], "another host is not held back")
+
+    def test_a_missing_file_is_not_retried_and_does_not_count_against_the_host(self) -> None:
+        fetcher, sleeps = self.make([self.Resp(404), self.Resp(404), self.Resp(200, payload={"ok": 1})], breaker_threshold=2)
+        for _ in range(2):
+            with self.assertRaises(RuntimeError) as caught:
+                fetcher.get_json("https://commons.example/missing")
+            self.assertIn("HTTP 404", str(caught.exception))
+        self.assertEqual([s for s in sleeps if s > 1.5], [], "a 404 is not asked again after a wait")
+        self.assertEqual(fetcher.get_json("https://commons.example/api"), {"ok": 1}, "two 404s do not open the breaker")
+        self.assertEqual(fetcher.summary()["given_up_on"], [])
 
     def test_the_fetcher_reports_where_its_time_went(self) -> None:
         fetcher, sleeps = self.make([self.Resp(429, {"Retry-After": "7"}), self.Resp(200, payload={"ok": 1}), self.Resp(200, payload={"ok": 2})])
@@ -249,6 +296,66 @@ class RequestsFetcherTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as caught:
             fetcher.get_json("https://commons.example/api")
         self.assertIn("failed", str(caught.exception))
+
+
+class ProviderOrderAndBreakerTests(unittest.TestCase):
+    """Sixth live run: Openverse (the lowest-priority provider) timed out on every query of every story and cost 8 of the stage's 12 minutes."""
+
+    def test_lower_priority_providers_are_not_asked_once_enough_candidates_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fetcher = FakeFetcher(commons=[commons_page(f"Elephant {n}.jpg") for n in range(8)])
+            photo_core.photos_for_story(fetcher, {"story_id": "s1", "photo_queries": ["Loxodonta africana", "African elephant", "elephant"]},
+                                        image_dir=Path(tmp), policy={}, per_min=1, per_max=2, used_pages=set())
+        asked = [url for url in fetcher.calls if "wikimedia" in url or "inaturalist" in url or "openverse" in url]
+        self.assertTrue(any("wikimedia" in url for url in asked))
+        self.assertFalse(any("inaturalist" in url or "openverse" in url for url in asked), asked)
+
+    def test_the_other_providers_are_asked_when_the_first_one_finds_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fetcher = FakeFetcher(commons=[], inat=[], openverse=[])
+            photo_core.photos_for_story(fetcher, {"story_id": "s1", "photo_queries": ["Loxodonta africana"]},
+                                        image_dir=Path(tmp), policy={}, per_min=1, per_max=2, used_pages=set())
+        self.assertEqual([("wikimedia" in u, "inaturalist" in u, "openverse" in u) for u in fetcher.calls],
+                         [(True, False, False), (False, True, False), (False, False, True)])  # in priority order
+
+    def make(self, breaker_threshold: int):
+        import requests
+
+        sleeps: list[float] = []
+        fetcher = photo_core.RequestsFetcher(retries=3, sleep=sleeps.append, clock=lambda: 1000.0, breaker_threshold=breaker_threshold)
+        calls: list[str] = []
+
+        def get(url, params=None, timeout=None):
+            calls.append(url)
+            raise requests.ReadTimeout("read timed out")
+
+        fetcher._session.get = get  # type: ignore[assignment]
+        return fetcher, calls
+
+    def test_a_timeout_is_retried_once_not_three_times(self) -> None:
+        fetcher, calls = self.make(0)
+        with self.assertRaises(RuntimeError):
+            fetcher.get_json("https://api.openverse.example/v1/images/")
+        self.assertEqual(len(calls), 2)
+
+    def test_a_host_that_keeps_failing_is_not_asked_again(self) -> None:
+        fetcher, calls = self.make(2)
+        for _ in range(2):
+            with self.assertRaises(RuntimeError):
+                fetcher.get_json("https://api.openverse.example/v1/images/")
+        before = len(calls)
+        with self.assertRaises(RuntimeError) as caught:
+            fetcher.get_json("https://api.openverse.example/v1/images/?q=x")
+        self.assertIn("skipped", str(caught.exception))
+        self.assertEqual(len(calls), before, "no request is made to a host that has given up")
+        self.assertIn("api.openverse.example", fetcher.summary()["given_up_on"])
+
+    def test_without_a_breaker_a_failing_host_is_asked_every_time(self) -> None:
+        fetcher, calls = self.make(0)
+        for _ in range(3):
+            with self.assertRaises(RuntimeError):
+                fetcher.get_json("https://api.openverse.example/v1/images/")
+        self.assertEqual(len(calls), 6)
 
 
 class ParallelPhotoTests(unittest.TestCase):
@@ -282,6 +389,25 @@ class ParallelPhotoTests(unittest.TestCase):
         waits.clear()
         fetcher._space("https://api.inaturalist.org/v1/observations")
         self.assertEqual(waits, [], "a different host has its own schedule")
+
+    def test_a_story_whose_search_budget_is_spent_stops_looking_and_keeps_what_it_has(self) -> None:
+        fetcher = FakeFetcher(commons=[commons_page(f"Elephant {n}.jpg") for n in range(8)])
+        times = iter([0.0, 5.0, 100.0, 200.0, 300.0])      # started at 0; the first check is at 5 s, the second after the 30 s budget
+        result = photo_core.photos_for_story(fetcher, {"story_id": "s1", "photo_queries": ["Loxodonta africana"]}, image_dir=self.dir / "img",
+                                             policy={"story_budget_seconds": 30}, per_min=1, per_max=2, used_pages=set(), clock=lambda: next(times))
+        self.assertEqual(len(result.chosen), 0, "the budget ran out before the first download, so nothing is stored")
+        self.assertTrue(any("search budget was spent" in r.get("reason", "") for r in result.rejected))
+        self.assertFalse([u for u in fetcher.calls if "upload" in u or "thumb" in u], "no download is started once the budget is spent")
+
+    def test_the_budget_does_not_touch_a_story_that_finishes_in_time_or_the_stories_after_it(self) -> None:
+        fetcher = FakeFetcher(commons=[commons_page("Elephant drinking.jpg"), commons_page("Elephant walking.jpg")])
+        stories = [{"story_id": f"story-{n}", "photo_queries": ["Loxodonta africana"]} for n in range(1, 4)]
+        edition = policy_edition()
+        edition.extra["photos"] = {**edition.extra["photos"], "story_budget_seconds": 30}
+        report = photo_core.run_photo_stage(stories, image_dir=self.dir / "img", fetcher=fetcher, edition=edition, date="2026-10-28")
+        self.assertGreaterEqual(report["total_images"], 1)
+        self.assertFalse([r for info in report["stories"].values() for r in info["rejected"] if "budget" in r.get("reason", "")])
+        self.assertEqual(sorted(report["stories"]), ["story-1", "story-2", "story-3"], "every story had its turn")
 
     def test_the_cap_on_the_whole_briefing_and_duplicate_photographs_are_resolved_in_story_order(self) -> None:
         fetcher = FakeFetcher(commons=[commons_page("Elephant drinking.jpg"), commons_page("Elephant walking.jpg")])

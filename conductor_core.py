@@ -81,7 +81,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # and fill-ins the slate itself calls thin are dropped before anything is written.
     "fill_blocklist": "",
     # Quotations found only in a fetch summary (not in page text the script fetched) that are tolerated before a repair is asked for.
-    "max_summary_only_quotes": 3,
+    "max_summary_only_quotes": 6,
+    # A quotation the script cannot find in the pages it fetched was checked only against a web-fetch summary (a small model's answer about the
+    # page). The pages the article itself cites are fetched by script and their text added to what quotations are checked against (about
+    # 70% of such quotations were found there in the sixth live run's Opus and Fable articles); what is still unverifiable after the repair
+    # round is given as paraphrase (no quotation marks) and counted in the editor's note.
+    "verify_cited_pages": True, "cited_page_chars": 80000, "cited_fetch_max": 14, "demote_unverified_quotes": True,
     "section_briefs": {},
     "timezone": "Asia/Tokyo", "deadline_local": "11:30",
     "models": {
@@ -414,6 +419,7 @@ class Conductor:
             # Fewer retries and a shorter timeout than the photo fetcher: a dead source must cost seconds, not minutes.
             web_fetcher = web_fetcher or photo_core.RequestsFetcher(timeout=20.0, retries=1)
         self.web_fetcher = web_fetcher
+        self._cited_cache: dict[str, str] = {}   # url -> readable page text ("" when the script could not read it)
         self._taxon_cache: dict[str, Any] = {}
         self.photo_fetcher, self.json_fetcher, self.url_checker = photo_fetcher, json_fetcher, url_checker
         self.audit_fixture = audit_fixture
@@ -1418,11 +1424,13 @@ class Conductor:
         tax = None
         for round_no in range(int(self.settings["repairs_per_article"]) + 1):
             blocking, item = self.check_article_text(article, section)
-            # Quotations are verified against page text the script fetched; what a fetch call *summarised* counts for figures only.
+            # Quotations are verified against page text the script fetched (the dossier and the pages the article cites); what a fetch
+            # call *summarised* counts for figures only.
+            cited = self._cited_pages(article, dossier)
             prov = provenance_core.check_article(
-                article, corpus, json_fetcher=self.json_fetcher, url_checker=self.url_checker, check_network=self.check_network,
-                verbatim_corpus=dossier.corpus() if dossier else None,
-                summary_only_limit=int(self.settings.get("max_summary_only_quotes", 3)))
+                article, corpus + cited, json_fetcher=self.json_fetcher, url_checker=self.url_checker, check_network=self.check_network,
+                verbatim_corpus=((dossier.corpus() if dossier else []) + cited) if (dossier or cited) else None,
+                summary_only_limit=int(self.settings.get("max_summary_only_quotes", 6)))
             tax = self.check_taxonomy(article)
             tax_bad = bool(tax and tax.needs_repair())
             word_only = bool(blocking) and all("hard word floor" in b for b in blocking)
@@ -1477,8 +1485,16 @@ class Conductor:
             if self._skip_low_confidence(article, sid, outcome):
                 return outcome  # a repair that leaves the writer unsure of its own conclusion does not make it publishable
 
+        demoted = 0
+        if self.settings.get("demote_unverified_quotes", True) and prov.summary_only_quotes:
+            article, demoted = provenance_core.demote_quotes(article, prov.summary_only_quotes)
+            if demoted:
+                outcome.fixes.append(f"{demoted} quotation(s) that could be checked only against a page summary were given as paraphrase")
+                prov.quotes_checked = max(0, prov.quotes_checked - len(prov.summary_only_quotes))
+                prov.summary_only_quotes = []
         outcome.words = int(item.get("word_count", 0))
         outcome.provenance = prov.to_dict()
+        outcome.provenance["quotes_demoted"] = demoted
         outcome.provenance["unread_mentions"] = len(tools.find_unread_source_mentions(article))  # what is left after repair, for the trend
         if tax is not None:
             outcome.provenance["taxonomy"] = tax.to_dict()
@@ -1511,6 +1527,32 @@ class Conductor:
         self.log(f"article {sid}: {outcome.status} ({outcome.words} words, ${outcome.cost_usd:.2f}"
                  f"{', ' + '; '.join(outcome.flags) if outcome.flags else ''})")
         return outcome
+
+    def _cited_pages(self, article: str, dossier: Any) -> list[str]:
+        """Text of the pages the article cites that the dossier does not already hold, fetched by script (public addresses only, through the
+        same fetcher as the dossier). Quotations found on them are verified word for word; they also back the article's figures."""
+        import dossier_core
+        import provenance_core
+
+        if not self.settings.get("verify_cited_pages", True) or self.web_fetcher is None:
+            return []
+        known = {s.url for s in dossier.sources} if dossier else set()
+        wanted = [u for u in provenance_core.cited_urls(article) if u not in known][: int(self.settings.get("cited_fetch_max", 14))]
+        fresh = [u for u in wanted if u not in self._cited_cache]
+        if fresh:
+            limit = int(self.settings.get("cited_page_chars", 80000))
+
+            def read(url: str) -> tuple[str, str]:
+                try:
+                    doc = dossier_core.fetch_source(url, self.web_fetcher, max_chars=limit)
+                except Exception:  # noqa: BLE001 - a page that cannot be read is simply not evidence
+                    return url, ""
+                return url, (f"{doc.title}\n" + "\n".join(doc.meta) + "\n" + doc.text) if doc.status == "ok" else ""
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+                for url, text in pool.map(read, fresh):
+                    self._cited_cache[url] = text
+        return [self._cited_cache[u] for u in wanted if self._cited_cache.get(u)]
 
     def _quick_skip(self, skip: str, result: Any) -> bool:
         """True when the writer's SKIP came after it had opened (almost) nothing itself, so it judged the story from the dossier alone."""
@@ -2030,6 +2072,9 @@ class Conductor:
             else:
                 mild += 1
         notes = []
+        demoted = sum(int((a["meta"].get("provenance") or {}).get("quotes_demoted") or 0) for a in articles)
+        if demoted:
+            notes.append(f"{demoted} quotation(s) could not be checked word for word against a page and are given as paraphrase")
         if serious:
             notes.append("figures or quotations not verified against the sources fetched in: " + "; ".join(serious))
         if mild:

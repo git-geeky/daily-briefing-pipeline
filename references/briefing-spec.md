@@ -188,7 +188,7 @@ Never fabricate identities or present guesses as findings. The validator warns w
   `| Claim | Interested Party | Structural Incentive | Tier-4 Counterpoint Source | Net Assessment |`
 
   Each row must name a real party and a real structural incentive. Generic rows ("sources disagree", "various analysts", "critics") are not acceptable — it is a structured audit trail, not decoration.
-- Parts I-IV require a `Watch Next 48h` block (placed at the article end, before the Primary Sources block) based on verifiable schedules, filings, calendars, or official event pages — with explicit dates/times in JST (e.g. "TSMC Q1 earnings call: April 10, 2026 16:00 JST"). Fewer than 3 bullets is fine; do not fabricate watch items to fill the box.
+- Parts I-IV require a `Watch Next 48h` block (placed at the article end, before the Primary Sources block) based on verifiable schedules, filings, calendars, or official event pages — with explicit dates/times in JST (e.g. "TSMC Q1 earnings call: April 10, 2026 16:00 JST"). Fewer than 3 bullets is fine; do not fabricate watch items to fill the box. A bullet is something that will happen outside the briefing (a hearing, vote, release, deadline, expiry, publication, season), never a check the reader is told to make ("re-check the docket at 09:00 JST", "one month after publication, check the page"). If nothing is scheduled in the next 48 hours, name the next dated external event; if there is none, the single bullet "No scheduled external event found for the next 48 hours." is correct.
 - Canonical machine-parsed heading forms for both blocks live in `generation-spec.md` (§Literal Format Specifications).
 
 ## Image Policy

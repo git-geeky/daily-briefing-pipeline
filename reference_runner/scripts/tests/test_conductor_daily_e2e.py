@@ -94,6 +94,15 @@ class DailyConductorTests(unittest.TestCase):
         self.assertEqual(result["header_source"], "model")
         self.assertTrue(any("asking once more" in e for e in result["events"]))
 
+    def test_a_watch_next_check_in_is_sent_back_with_what_a_watch_line_is(self) -> None:
+        """Sixth live run: 11 of 88 Watch Next lines were check-ins the reader is told to make ("Check the docket ... 09:00 JST")."""
+        result = run_daily("self_check_watch", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        finding = next(f for f in result["repair_findings"] if "self-assigned check" in f)
+        self.assertIn("Check the docket for any follow-up statement", finding)
+        self.assertIn("No scheduled external event found for the next 48 hours.", finding)
+        self.assertIn("part1-story-3", result["articles_done"])
+
     def test_a_day_with_no_updates_shows_no_empty_updates_heading(self) -> None:
         """Found in the fifth live run: an empty "PART VI - UPDATES" heading sat directly above the closing analysis."""
         result = run_daily("no_updates", self.fresh())

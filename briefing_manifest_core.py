@@ -1233,6 +1233,13 @@ def evaluate_item_rules(
         blocking.append(f"{prefix}: Counterpoint Matrix has {item.get('counterpoint_row_count')} row(s); hard-news articles need at least two")
     if section in WATCH_REQUIRED_SECTIONS and not item["watch_next_48h"]:
         blocking.append(f"{prefix}: missing {WATCH_LABEL} block")
+    checks = [e for e in item.get("watch_next_48h") or [] if classify_watch_entry(e) == "check"]
+    if section in WATCH_REQUIRED_SECTIONS and checks:
+        blocking.append(
+            f"{prefix}: {WATCH_LABEL} lists {len(checks)} self-assigned check(s), not events (e.g. {checks[0][:110]!r}). Delete them. A line names something "
+            "that will happen outside this briefing (a hearing, vote, release, deadline, expiry, publication, season) with its date and a source; "
+            "if nothing is scheduled in the next 48 hours, name the next dated external event even if it is later, and if there is none write the "
+            f"single line {NO_EVENT_WATCH!r}")
     if not item["source_appendix_present"]:
         blocking.append(f"{prefix}: missing source appendix")
     soft_min = rules.get("soft_min_words", rules["min_words"])
@@ -1592,6 +1599,35 @@ def strip_watch_block(text: str) -> str:
             end += 1
         return "\n".join(lines[:index] + lines[end:])
     return text
+
+
+# A Watch Next line names something that will happen outside the briefing (a hearing, vote, release, deadline, expiry, publication, season).
+# Writers also produce check-ins the reader is told to make themselves ("re-check on October 28 at 09:00 JST", "Check the docket ...",
+# "one month after publication, check the page"): the date is invented and nothing is scheduled. Found in 25 of 88 Watch Next lines of the
+# sixth live run, across every writer model.
+_SELF_CHECK_RES = (
+    re.compile(r"(?i)\bre-?check(?:ed)?\s+(?:on|at|by|before|after)\b"),
+    re.compile(r"(?i)\b(?:one|two|three|four|six|\d+)\s+(?:days?|weeks?|months?)\s+after\s+(?:publication|the\s+(?:paper|post|release|article|report|filing|ruling))\b"),
+)
+_SELF_CHECK_LEAD_RE = re.compile(r"(?i)^(?:re-?check|check|monitor|revisit|look\s+for|verify\s+(?:whether|that|the))\b")
+_NO_EVENT_RE = re.compile(r"(?i)^(?:(?:no|nothing|none)\b[^.]{0,90}\b(?:scheduled|announced|found|dated|planned|set)\b|date\s+not\s+announced|no\s+fixed\s+date)")
+NO_EVENT_WATCH = "No scheduled external event found for the next 48 hours."
+_WATCH_DATE_PREFIX_RE = re.compile(
+    r"^(?:\d{4}-\d{2}-\d{2}|\d{1,2}\s+[A-Za-z]+\s+\d{4}|[A-Za-z]+\s+\d{1,2},\s+\d{4})(?:[ ,T]+\d{1,2}:\d{2})?(?:\s*(?:JST|UTC|CET|KST))?\s*:\s+")
+
+
+def classify_watch_entry(entry: str) -> str:
+    """``"check"`` (a check-in the reader is told to make), ``"none"`` (an honest statement that nothing is scheduled) or ``"event"``."""
+    text = re.sub(r"\s*\(https?://[^)]*\)\s*", " ", entry or "").strip()
+    remainder = text
+    prefix = _WATCH_DATE_PREFIX_RE.match(text)  # "2026-10-28 09:00 JST: Check the docket ..."
+    if prefix:
+        remainder = text[prefix.end():]
+    if _SELF_CHECK_LEAD_RE.match(remainder) or any(r.search(text) for r in _SELF_CHECK_RES):
+        return "check"
+    if _NO_EVENT_RE.match(remainder):
+        return "none"
+    return "event"
 
 
 def extract_watch_entries(text: str) -> list[str]:

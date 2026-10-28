@@ -604,6 +604,38 @@ def _doi_citations(markdown: str, entries: list[str]) -> list[tuple[str, str]]:
 # --------------------------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------------------------
+_OPEN_QUOTE = "\"\u201c\u201e\u00ab\u2018'\u300c"
+_CLOSE_QUOTE = "\"\u201d\u201c\u00bb\u2019'\u300d"
+
+
+def cited_urls(markdown: str) -> list[str]:
+    """Every address the article cites (its Primary Sources and Watch Next lines; the body carries none), in order, without duplicates."""
+    seen: dict[str, None] = {}
+    for line in markdown.splitlines():
+        if line.lstrip().startswith(("![", "<!--")):
+            continue
+        for url in _URL_RE.findall(line):
+            seen.setdefault(url.rstrip(".,;:"), None)
+    return list(seen)
+
+
+def demote_quotes(markdown: str, quotes: list[str]) -> tuple[str, int]:
+    """Give each listed quotation as paraphrase: its quotation marks are removed and its words stay. A quotation that could be checked
+    only against a page summary (a small model's answer about the page) is not shown as the page's own words. Only text before the
+    Primary Sources block is touched. Returns (new markdown, number of quotations changed)."""
+    block = re.search(r"(?m)^###\s+Primary Sources\b", markdown)
+    head, tail = (markdown[:block.start()], markdown[block.start():]) if block else (markdown, "")
+    changed = 0
+    for quote in quotes:
+        words = [re.escape(w) for w in quote.split()]
+        if len(words) < 3:
+            continue
+        pattern = re.compile(rf"[{re.escape(_OPEN_QUOTE)}]\s*({r'\s+'.join(words)})\s*[{re.escape(_CLOSE_QUOTE)}]")
+        head, n = pattern.subn(lambda m: m.group(1), head)
+        changed += 1 if n else 0
+    return head + tail, changed
+
+
 def check_article(
     markdown: str,
     corpus: list[str],
@@ -677,6 +709,6 @@ def check_article(
 
 
 __all__ = [
-    "NumberClaim", "ProvenanceReport", "check_article", "check_doi", "clean_doi", "default_url_checker", "extract_numeric_claims",
-    "extract_quotes", "normalize_text", "quote_in_corpus",
+    "NumberClaim", "ProvenanceReport", "check_article", "check_doi", "cited_urls", "clean_doi", "default_url_checker", "demote_quotes",
+    "extract_numeric_claims", "extract_quotes", "normalize_text", "quote_in_corpus",
 ]

@@ -104,7 +104,7 @@ Consequences for conservation, husbandry, veterinary practice, theory, or policy
 Rules that the validators enforce (see `editions/animal.json`):
 
 - `Bottom line`, `Confidence` (High/Medium/Low), and at least one italicised scientific binomial are **blocking**. Taxonomy & Status table, evidence card, methods-and-limits section, and DOIs are expected (warnings when absent; legitimately absent for some event stories).
-- Counterpoint Matrix and Watch Next are blocking. Watch Next bullets are dated and carry a source URL.
+- Counterpoint Matrix and Watch Next are blocking. Watch Next bullets are dated and carry a source URL, and each names something that will happen outside the briefing (a decision, release, season, data deposit, conference, deadline), never a check the reader is told to make ("one month after publication, check the page"). If none is scheduled, name the next dated one; if there is none, the single bullet "No scheduled external event found for the next 48 hours." is correct.
 - **No external links in the body** outside Primary Sources and Watch Next. Cite DOIs in text as `doi:10.xxxx/yyyy`; full URLs go in Primary Sources.
 - At least **6 sources** per article, at least **3 distinct source classes** (official/agency, primary research, data/registry, reporting, wire, analysis), and at least **3 sources drawn from the animal catalog pool** (`animals`-credited rows).
 - At least one **native-language** source in three or more articles per briefing (warning if fewer); cite the original and translate the load-bearing sentence. Mark language in the source list.

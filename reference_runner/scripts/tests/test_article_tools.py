@@ -402,3 +402,35 @@ class AnimalValidatorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WatchNextClassificationTests(unittest.TestCase):
+    """Real lines from the sixth live run (all three writer models produced check-ins)."""
+
+    def kind(self, line: str) -> str:
+        os.environ.setdefault("DAILY_BRIEFING_SHARED_ROOT", str(REPO_ROOT))
+        if str(SCRIPTS_DIR) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS_DIR))
+        import briefing_manifest as manifest
+
+        return manifest.classify_watch_entry(line)
+
+    def test_check_ins_the_reader_is_told_to_make_are_found(self) -> None:
+        for line in ("Check the S.D.N.Y. docket for a Justice Department notice of appeal, October 28, 2026 09:00 JST (https://www.cbsnews.com/x)",
+                     "2026-10-28 09:00 JST: Check the `openai/math` history log for any review status or correction (https://github.com/openai/math)",
+                     "Status of the pending patches in the incident tracker table; re-check on October 28, 2026 at 09:00 JST (https://x.example/a)",
+                     "13 November 2026: one month after publication, check the Zenodo data record for versioned updates (https://zenodo.org/x)",
+                     "15 January 2027: three months after publication, check the Science article page for eLetters (https://science.org/x)"):
+            self.assertEqual(self.kind(line), "check", line)
+
+    def test_scheduled_external_events_are_events(self) -> None:
+        for line in ("12 November 2026: next NOAA Climate Prediction Center ENSO diagnostic discussion (https://www.cpc.ncep.noaa.gov/x)",
+                     "Season opener, the 555th Subscription Concert, Friday, April 9, 2027, 18:45 JST (https://orchestra.example/x)",
+                     "Ceasefire expiry at 22:59 on Sunday, November 1 (Kyiv time); any extension or violation reports (https://www.ukrinform.net/x)",
+                     "Exit polls from Israel's main TV channels when voting closes at 10 p.m. Israel time: October 28, 2026, 5:00 JST (https://www.hani.co.kr/x)",
+                     "2026-12-31: Publication of the full dataset, if the journal's data statement requires deposit; check the paper's record (https://oup.example/x)"):
+            self.assertEqual(self.kind(line), "event", line)
+
+    def test_an_honest_statement_that_nothing_is_scheduled_is_not_a_check(self) -> None:
+        self.assertEqual(self.kind("No scheduled external event found for the next 48 hours."), "none")
+        self.assertEqual(self.kind("Date not announced: any EUROBATS decision on adding the species to the list (https://x.example/a)"), "none")

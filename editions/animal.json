@@ -338,7 +338,6 @@
     },
     "strip_unread_mentions": true,
     "slate_reserves": 8,
-    "max_summary_only_quotes": 1,
     "fill_blocklist": "(?i)\\b(?:prizes?|awards?|awarded|laureates?|honou?rs?|honou?red|appointed|appointments?|elected|nominat\\w*|grants?|funding|funded|fellowships?|scholarships?|training (?:course|programme|program|session)|refresher course|workshops?|conferences?|ceremon\\w*|anniversar\\w*|inaugurat\\w*|launch(?:es|ed)? (?:of )?(?:a |the )?(?:new )?(?:programme|program|campaign|initiative))\\b"
   }
 }

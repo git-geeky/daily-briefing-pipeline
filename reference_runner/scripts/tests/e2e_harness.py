@@ -135,6 +135,13 @@ def script(request: llm.LLMRequest):
             quoted = clean_for(story).replace("### Implications\n", '### Implications\n\nThe agency page states "the fixture population numbered 4,321 animals in the census year".\n')
             # the writer's own tool results back the article's figures but not the quotation: only the dossier page can
             return result_for(quoted, corpus=clean_for(story))
+        if scenario in {"cited_quote", "summary_quote"} and stage == "article" and sid == "fixture-story-2":
+            sentence = "the survey covered every long term plot across all of the regional study areas in the census year"
+            quoted = clean_for(story).replace("### Implications\n", f'### Implications\n\nThe regional page states "{sentence}".\n')
+            if scenario == "cited_quote":  # the quotation is on a page the article cites (not in the dossier); the writer's own results do not hold it
+                quoted = quoted.rstrip("\n") + "\n- Regional page. https://example.org/regional-page\n"
+                return result_for(quoted, corpus=clean_for(story))
+            return result_for(quoted, corpus=clean_for(story) + "\n" + sentence)  # only a fetch summary holds it
         if scenario == "taxonomy_typo" and stage == "article" and sid == "fixture-story-2":
             return result_for(fx.make_article(story, words=WORDS, source_lines=fx.default_sources(catalog), binomial="Genus speceis"),
                               corpus=clean_for(story))
@@ -228,12 +235,17 @@ class FakeGbifWeb(FakeWeb):
 
 
 web_fetcher = None
-if scenario in {"dossier", "dossier_quote", "taxonomy_typo"}:
+if scenario in {"dossier", "dossier_quote", "taxonomy_typo", "cited_quote", "summary_quote"}:
     page = ("<html><head><title>Fixture agency page</title></head><body><article><p>The fixture population numbered 4,321 animals in the census year, "
             "according to the agency, and monitoring continued through the following survey season at all of the long-term plots. "
             "The agency added that detection probability was modelled separately for every transect and that the full dataset is archived "
             "in a public repository with the analysis scripts.</p></article></body></html>")
-    web_fetcher = FakeGbifWeb({f"https://example.org/{kind}-{i}": html_bytes(page) for i in range(14) for kind in ("paper", "agency")})
+    pages = {f"https://example.org/{kind}-{i}": html_bytes(page) for i in range(14) for kind in ("paper", "agency")}
+    pages["https://example.org/regional-page"] = html_bytes(
+        "<html><head><title>Regional page</title></head><body><article><p>The regional office reported that the survey covered every long term plot "
+        "across all of the regional study areas in the census year, and that detection was modelled separately for every transect in the programme.</p>"
+        "</article></body></html>")
+    web_fetcher = FakeGbifWeb(pages)
 
 settings = {"slate_reserves": 4 if scenario == "slate_topup" else 3, "review_enabled": True, "models": {"review": {"model": "opus", "effort": "low", "optional": True}}}
 if scenario.startswith("quick_skip"):

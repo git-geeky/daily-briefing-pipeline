@@ -77,6 +77,8 @@ def script(request: llm.LLMRequest):
             head, _, tail = text.partition("### Primary Sources")
             kept = [line for line in tail.splitlines() if not line.startswith("- ") or "reuters.com" in line or "whitehouse.gov" in line]
             text = head + "### Primary Sources" + "\n".join(kept) + "\n"  # one wire and one agency page: a single anchor, two domains
+        if scenario == "self_check_watch" and stage == "article" and story["story_id"] == "part1-story-3":
+            text = text.replace("- 2026-10-27 09:00 JST: follow-up statement expected", "- Check the docket for any follow-up statement, 2026-10-27 09:00 JST")
         if scenario == "single_counterpoint_row" and stage == "article" and story["story_id"] == "part1-story-1":
             text = "\n".join(line for line in text.splitlines() if not line.startswith("| The change is temporary"))
         return ok(text)

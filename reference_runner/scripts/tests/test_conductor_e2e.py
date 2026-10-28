@@ -266,6 +266,22 @@ class ConductorE2ETests(unittest.TestCase):
         self.assertTrue(result["digest_tools"] and all(tools == [] for tools in result["digest_tools"]),
                         "with dossiers the digest writer needs no tools")
 
+    def test_a_quotation_on_a_page_the_article_cites_is_verified_by_script_without_a_repair(self) -> None:
+        """Sixth live run: about 70% of quotations missing from the dossier were on pages the article itself cited."""
+        result = run_harness("cited_quote", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertNotIn("repair", result["calls"])
+        self.assertIn('"the survey covered every long term plot', result["assembled_text"])  # still a quotation
+        self.assertFalse([n for n in (result["notes"] or []) if "paraphrase" in n])
+
+    def test_a_quotation_known_only_from_a_page_summary_is_given_as_paraphrase_and_counted(self) -> None:
+        result = run_harness("summary_quote", self.fresh())
+        self.assertEqual(result["exit"], 0, result["events"])
+        self.assertNotIn("repair", result["calls"])  # under the repair threshold: the pipeline does not buy a fix it cannot get
+        self.assertNotIn('"the survey covered every long term plot', result["assembled_text"])
+        self.assertIn("the survey covered every long term plot across all of the regional study areas in the census year", result["assembled_text"])
+        self.assertTrue(any("1 quotation(s) could not be checked word for word" in n for n in (result["notes"] or [])), result["notes"])
+
     def test_a_low_confidence_article_is_dropped_before_repair_and_replaced_by_a_reserve(self) -> None:
         result = run_harness("low_conf_replaced", self.fresh())
         self.assertEqual(result["exit"], 0, result["events"])

@@ -474,3 +474,26 @@ class RepairThresholdTests(unittest.TestCase):
         self.assertFalse(self.report(94, 7).needs_repair())
         self.assertFalse(self.report(200, 15).needs_repair())  # 7.5%: under the ratio
         self.assertTrue(self.report(94, 7).reader_should_be_told())
+
+
+class CitedPagesAndDemotionTests(unittest.TestCase):
+    """Sixth live run: Opus and Fable quote more, mostly from web-fetch summaries."""
+
+    def test_the_addresses_an_article_cites_are_listed_once_without_trailing_punctuation(self) -> None:
+        md = "## T\n\n- [TSP] Watch (https://a.org/x).\n\n### Primary Sources\n- A. https://a.org/x\n- B. https://b.org/y;\n![cap](https://img.org/z.jpg)\n"
+        self.assertEqual(prov.cited_urls(md)[:2], ["https://a.org/x", "https://b.org/y"])
+        self.assertNotIn("https://img.org/z.jpg", prov.cited_urls(md))
+
+    def test_demotion_removes_the_quotation_marks_and_keeps_the_words(self) -> None:
+        md = ('## T\n\nShe said "we will not comply with the order as written under any circumstances" today and "a short phrase" too.\n\n'
+              '### Primary Sources\n- A \u201cwe will not comply with the order as written under any circumstances\u201d https://x.org\n')
+        out, n = prov.demote_quotes(md, ["we will not comply with the order as written under any circumstances"])
+        self.assertEqual(n, 1)
+        self.assertIn("She said we will not comply with the order as written under any circumstances today", out)
+        self.assertIn('"a short phrase"', out)                                             # not listed: untouched
+        self.assertIn("\u201cwe will not comply with the order", out.split("### Primary Sources")[1])  # the sources block is never edited
+
+    def test_a_quotation_wrapped_across_lines_is_found(self) -> None:
+        out, n = prov.demote_quotes('He said "we will not comply with the order\nas written under any circumstances" today.\n', ["we will not comply with the order as written under any circumstances"])
+        self.assertEqual(n, 1)
+        self.assertNotIn('"', out)

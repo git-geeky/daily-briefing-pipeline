@@ -646,6 +646,20 @@ class Conductor:
                              f"(key 'edition:{self.edition.edition_id}'; see docs/RUNBOOK.md, 'Private overlay'). It was not found, so today's briefing "
                              f"runs with the generic public text ({self.edition.get('private_overlay.covers', 'regional and watch-list coverage')}). "
                              "Nothing else is affected.")
+        elif self.edition.get("private_overlay.catalog"):
+            try:
+                import private_config
+
+                catalog = private_config.private_catalog_path(self.edition.edition_id)
+                missing = not catalog.exists()
+            except Exception:  # noqa: BLE001
+                missing = True
+            if missing:
+                self.log("the private source catalog for this edition was not found: the regional and watch-list sources it lists are not audited")
+                self._alert_once("private-catalog-missing", f"{self.edition.label}: private source catalog not found",
+                                 f"The private coverage overlay was found, but not the private source catalog (private-sources-{self.edition.edition_id}.md "
+                                 "beside the restore file, or the file named by BRIEFING_PRIVATE_CATALOG; see docs/RUNBOOK.md, 'Private overlay'). "
+                                 "Today's source audit leaves out the sources that identify the regional and watch-list beats. Nothing else is affected.")
 
     def run(self, *, finish_only: bool = False) -> int:
         if not self.settings.get("enabled", True) or os.environ.get("BRIEFING_DISABLED") == "1":

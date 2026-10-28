@@ -24,6 +24,21 @@ def default_restore_path() -> Path:
     return Path.home() / ".config" / "daily-briefing-pipeline" / "restore.local.json"
 
 
+CATALOG_ENV = "BRIEFING_PRIVATE_CATALOG"
+
+
+def private_catalog_path(edition_id: str) -> Path:
+    """The owner's private source catalog for an edition: ``private-sources-<edition>.md`` beside the restore file (or the file named
+    by ``BRIEFING_PRIVATE_CATALOG``). It uses the same table format as ``references/sources.md`` and holds the sources that would
+    identify the owner's home region or interests if they were public (the public catalog skips their numbers)."""
+    explicit = os.environ.get(CATALOG_ENV)
+    if explicit:
+        return Path(explicit).expanduser()
+    restore = os.environ.get(RESTORE_FILE_ENV)
+    base = Path(restore).expanduser().parent if restore else default_restore_path().parent
+    return base / f"private-sources-{edition_id}.md"
+
+
 def _load_restore_payload(env_var: str = RESTORE_FILE_ENV) -> dict[str, Any]:
     explicit = os.environ.get(env_var)
     path = Path(explicit).expanduser() if explicit else default_restore_path()

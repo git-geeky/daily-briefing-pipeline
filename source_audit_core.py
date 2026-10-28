@@ -93,7 +93,18 @@ def default_catalog_path() -> Path:
 def default_catalog_paths() -> list[Path]:
     """Catalogs for the active edition (daily: sources.md; animal: sources.md + animal-sources.md)."""
     root = Path(__file__).resolve().parent / "references"
-    return [root / name for name in edition_core.load_edition().catalogs]
+    edition = edition_core.load_edition()
+    paths = [root / name for name in edition.catalogs]
+    if edition.get("private_overlay.catalog"):  # the owner's own sources, kept out of the public repository
+        try:
+            import private_config
+
+            private = private_config.private_catalog_path(edition.edition_id)
+            if private.exists():
+                paths.append(private)
+        except Exception:  # noqa: BLE001 - a missing or unreadable private file must never stop the audit
+            pass
+    return paths
 
 
 def source_audit_path(date: str) -> Path:

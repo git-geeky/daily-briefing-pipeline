@@ -246,7 +246,8 @@
   },
   "private_overlay": {
     "required": true,
-    "covers": "Part IV regional coverage and watch-list beats"
+    "covers": "Part IV regional coverage, watch-list beats and the sources behind them",
+    "catalog": true
   },
   "ingest": {
     "hacker_news": {

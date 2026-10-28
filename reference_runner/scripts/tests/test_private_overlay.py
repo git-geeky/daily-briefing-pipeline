@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import types
 import unittest
@@ -41,10 +42,74 @@ class OverlayTests(unittest.TestCase):
         edition_core._load_cached.cache_clear()
         return path
 
+    # SHA-256 of lower-cased words, word pairs and (for Japanese) three-character runs that name the owner's home region and interests. The
+    # words themselves are not written here: a test that lists them would publish them.
+    PRIVATE_HASHES = frozenset({
+        "29008210f6124abd1a2aa827619795b827a05bc06c054340d2f66fa92cf5b69f", "0718921b48647a0cffdd7303fe2f47bdd1b7186df76265c03a1f9c404815f5fe",
+        "fefd90d50bea5e5cebe31680ec4b6196b04cb7b5b97896bf270cf2135e6f7d8c", "2a95e2ef9e4d24f0b8925c98881c05cd71927bb8ca794d1a5857ee33ed79ffc0",
+        "85b5f697eb22357b4bbbc403d4db0a350b15cecf4371b25ec88f9f840c2eb0b4", "bd64d4aaf40e73ef5ee0c34266763271685da1554076b074cec14885cb876073"})
+
+    @classmethod
+    def private_hits(cls, text: str) -> list[str]:
+        import hashlib
+        import re
+
+        words = re.findall(r"[a-z]+", text.lower())
+        candidates = set(words) | {" ".join(pair) for pair in zip(words, words[1:])}
+        for run in re.findall(r"[\u3040-\u30ff\u4e00-\u9fff]{3,}", text):
+            candidates |= {run[i:i + 3] for i in range(len(run) - 2)}
+        return sorted(c for c in candidates if hashlib.sha256(c.encode()).hexdigest() in cls.PRIVATE_HASHES)
+
     def test_the_public_edition_carries_no_personal_coverage_details(self) -> None:
-        text = (REPO_ROOT / "editions" / "daily.json").read_text(encoding="utf-8") + (REPO_ROOT / "references" / "briefing-spec.md").read_text(encoding="utf-8")
-        for private in ("PRIVATE-TERM",):
-            self.assertNotIn(private, text)
+        files = [REPO_ROOT / "editions" / "daily.json", REPO_ROOT / "references" / "briefing-spec.md", REPO_ROOT / "references" / "sources.md",
+                 *sorted((REPO_ROOT / "prompts" / "daily").glob("*.md"))]
+        for path in files:
+            self.assertEqual(self.private_hits(path.read_text(encoding="utf-8")), [], f"{path.name} names the owner's home region or interests")
+
+    def test_the_leak_check_itself_finds_what_it_is_for(self) -> None:
+        import hashlib
+        from unittest import mock
+
+        harmless = frozenset(hashlib.sha256(w.encode()).hexdigest() for w in ("zebra crossing", "quokka", "\u3053\u3093\u306b"))
+        with mock.patch.object(type(self), "PRIVATE_HASHES", harmless):
+            hits = self.private_hits("A quokka near the Zebra Crossing, then \u3053\u3093\u306b\u3061\u306f.")
+        self.assertEqual(hits, ["quokka", "zebra crossing", "\u3053\u3093\u306b"])  # a word, a word pair and a Japanese run
+
+    def test_the_owners_private_source_catalog_joins_the_audit_without_clashing_with_the_public_numbers(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import source_audit_core
+
+        catalog = Path(self.tmp.name) / "private-sources-daily.md"
+        catalog.write_text("## PART IV \u2014 JAPAN NEWS\n\n### Regional\n\n| # | Source | URL | Why |\n|---|--------|-----|-----|\n"
+                           "| 75 | **A Private Regional Paper** | https://regional.example/ | A regional paper. |\n", encoding="utf-8")
+        previous = os.environ.get(private_config.CATALOG_ENV)
+        os.environ[private_config.CATALOG_ENV] = str(catalog)
+        edition_core._load_cached.cache_clear()
+        try:
+            names = [e.name for e in source_audit_core.parse_source_catalogs()]
+        finally:
+            if previous is None:
+                os.environ.pop(private_config.CATALOG_ENV, None)
+            else:
+                os.environ[private_config.CATALOG_ENV] = previous
+        self.assertIn("A Private Regional Paper", names)
+        self.assertGreater(len(names), 300)  # and the public catalog is still read in full
+
+    def test_without_a_private_catalog_the_public_one_is_read_alone(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        import source_audit_core
+
+        previous = os.environ.get(private_config.CATALOG_ENV)
+        os.environ[private_config.CATALOG_ENV] = str(Path(self.tmp.name) / "missing.md")
+        try:
+            names = [e.name for e in source_audit_core.parse_source_catalogs()]
+        finally:
+            if previous is None:
+                os.environ.pop(private_config.CATALOG_ENV, None)
+            else:
+                os.environ[private_config.CATALOG_ENV] = previous
+        self.assertGreater(len(names), 300)
+        self.assertNotIn("A Private Regional Paper", names)
 
     def test_without_an_overlay_the_edition_is_generic_and_says_so(self) -> None:
         os.environ[private_config.RESTORE_FILE_ENV] = str(Path(self.tmp.name) / "missing.local.json")
